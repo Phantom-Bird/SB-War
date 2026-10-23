@@ -1,0 +1,11 @@
+{
+  "name": "sbwar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "杀币战争：硬币判定驱动的本地双人技能对战游戏",
+  "scripts": {
+    "start": "node scripts/serve.cjs",
+    "test": "node tests/all.test.cjs",
+    "test:ui": "node scripts/ui-smoke.cjs"
+  }
+}

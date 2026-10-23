@@ -1,0 +1,6 @@
+node_modules/
+.ui-screens/
+.chrome-smoke-profile/
+.chrome-profile*/
+.screenshot-*.png
+.dsh-*
