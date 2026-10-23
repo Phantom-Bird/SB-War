@@ -16,13 +16,28 @@
   const BODY_SLOTS = 4;
   const STANDIN_MAX_HP = 1;
   const STANDIN_SLOTS = 2;
+  const MIN_PLAYERS = 2;
+  const MAX_PLAYERS = 4;
+
+  /**
+   * 本体生命值上限 = 人数 + 1。
+   * 普通攻击现在一次覆盖“全体对手本体”或“全体对手替身”，
+   * 双人局与原规则相同（1 伤害），人数越多越需要更高的血量来平衡。
+   */
+  function bodyMaxHpFor(playerCount) {
+    return Math.max(2, playerCount) + 1;
+  }
+
+  /** 模式：2 人对决 / 3-4 人混战。多人模式下“对方”指全体其他玩家。 */
+  const MODE_DUEL = 'duel';
+  const MODE_BATTLE = 'battle';
 
   const SKILLS = [
     {
       id: 0, key: 'attack', name: '普通攻击', icon: '⚔', accent: '#ff9f68',
-      slot: false, target: 'enemy',
-      short: '对目标造成 1 点伤害；判定失败反噬自身 1 点。',
-      desc: '对目标造成 1 点伤害。普通攻击不占用技能槽；判定失败时反噬自身 1 点伤害，不会由对方代为使用。这次自伤仍会触发磨刀、护盾、韧性、反甲等效果。'
+      slot: false, target: 'group',
+      short: '对全体对手本体或全体对手替身造成 1 点伤害。',
+      desc: '选择攻击全体对手的本体，或全体对手的替身，组内每个存活实体各受到 1 点伤害。普通攻击不占用技能槽；判定失败时反噬自身 1 点伤害，不会由对方代为使用。这次自伤仍会触发磨刀、护盾、韧性、反甲等效果。'
     },
     {
       id: 1, key: 'sharpen', name: '磨刀', icon: '△', accent: '#f5c26b',
@@ -40,7 +55,7 @@
       id: 3, key: 'split', name: '拆分', icon: '|', accent: '#b9a2ff',
       slot: true, target: 'self',
       short: '把当前生命值拆成多个 1 HP 阶段。',
-      desc: '当前每 1 点生命值变成一个阶段，每个阶段的生命值上限为 1，并且都可以进行复活判定。阶段复活成功会保住当前阶段；失败则失去该阶段并进入下一阶段，只有最后一个阶段失败才会出局。最后阶段复活成功后解除拆分，生命值变为 1/3。再次使用会解除拆分，并把生命值重置为剩余阶段数。'
+      desc: '当前每 1 点生命值变成一个阶段，每个阶段的生命值上限为 1，并且都可以进行复活判定。阶段复活成功会保住当前阶段；失败则失去该阶段并进入下一阶段，只有最后一个阶段失败才会出局。最后阶段复活成功后解除拆分，生命值只剩 1 点。再次使用会解除拆分，并把生命值重置为剩余阶段数。'
     },
     {
       id: 4, key: 'tenacity', name: '韧性', icon: '—', accent: '#8fd6b4',
@@ -90,7 +105,7 @@
 
   const DEFAULT_IO = {
     chooseCoinIntervention: async () => ({ done: true }),
-    chooseTarget: async ({ candidates }) => (candidates[0] ? candidates[0].id : null),
+    chooseTarget: async ({ options }) => (options && options.length ? options[0].id : null),
     animateRoll: async () => {},
     pause: async () => {},
     onLog: () => {},
@@ -100,14 +115,15 @@
     onGameOver: () => {}
   };
 
-  function makeEntity({ id, name, owner, isStandin }) {
+  function makeEntity({ id, name, owner, isStandin, maxHp }) {
+    const cap = isStandin ? STANDIN_MAX_HP : maxHp || BODY_MAX_HP;
     return {
       id,
       name,
       owner,
       isStandin: !!isStandin,
-      hp: isStandin ? STANDIN_MAX_HP : BODY_MAX_HP,
-      maxHp: isStandin ? STANDIN_MAX_HP : BODY_MAX_HP,
+      hp: cap,
+      maxHp: cap,
       alive: true,
       slotCap: isStandin ? STANDIN_SLOTS : BODY_SLOTS,
       slots: [],
@@ -174,12 +190,28 @@
     return s ? s.name : `技能${id}`;
   }
 
+  /**
+   * 规整玩家名单：至少 2 人、最多 MAX_PLAYERS 人。
+   * 末尾的空名字会被裁掉（人数随之减少），空位置回退为“玩家N”。
+   */
+  function normalizeNames(names) {
+    const list = Array.isArray(names) ? names : [names];
+    const raw = [];
+    for (let i = 0; i < MAX_PLAYERS; i += 1) {
+      raw.push(list[i] == null ? '' : String(list[i]).trim());
+    }
+    while (raw.length > MIN_PLAYERS && !raw[raw.length - 1]) raw.pop();
+    return raw.map((name, i) => name || `玩家${i + 1}`);
+  }
+
   class Game {
     constructor(options = {}) {
       this.io = Object.assign({}, DEFAULT_IO, options.io || {});
       this.rng = typeof options.rng === 'function' ? options.rng : Math.random;
 
       this.players = [];
+      this.mode = MODE_DUEL;
+      this.bodyMax = BODY_MAX_HP;
       this.current = 0;
       this.turn = 0;
       this.busy = false;
@@ -194,20 +226,19 @@
     // ---------------------------------------------------------- 生命周期
 
     start(names = [], opts = {}) {
-      this.players = [0, 1].map((i) => {
-        const raw = names[i] == null ? '' : String(names[i]).trim();
-        const name = raw || `玩家${i + 1}`;
-        return {
-          index: i,
-          name,
-          body: makeEntity({ id: `p${i}`, name, owner: i, isStandin: false }),
-          standin: null
-        };
-      });
+      const list = normalizeNames(names);
+      this.mode = list.length > MIN_PLAYERS ? MODE_BATTLE : MODE_DUEL;
+      this.bodyMax = bodyMaxHpFor(list.length);
+      this.players = list.map((name, i) => ({
+        index: i,
+        name,
+        body: makeEntity({ id: `p${i}`, name, owner: i, isStandin: false, maxHp: this.bodyMax }),
+        standin: null
+      }));
 
       const first = opts.firstPlayer;
-      if (first === 0 || first === 1) this.current = first;
-      else this.current = this.rng() < 0.5 ? 0 : 1;
+      if (Number.isInteger(first) && this.players[first]) this.current = first;
+      else this.current = Math.floor(this.rng() * this.players.length);
 
       this.turn = 1;
       this.busy = false;
@@ -216,7 +247,7 @@
       this.started = true;
       this.logs = [];
       this._logId = 0;
-      this.stats = [0, 1].map(() => ({
+      this.stats = this.players.map(() => ({
         damageDealt: 0,
         damageTaken: 0,
         skillsUsed: 0,
@@ -254,6 +285,26 @@
       return this.players[entity.owner];
     }
 
+    /** 是否为多人混战模式 */
+    isMultiplayer() {
+      return this.players.length > MIN_PLAYERS;
+    }
+
+    /** 本体生命值上限＝人数 + 1；开局前退回双人局的 3 点 */
+    bodyMaxHp() {
+      return this.bodyMax || BODY_MAX_HP;
+    }
+
+    /** 除了该玩家以外的全体玩家；双人模式下就是唯一的对手 */
+    othersOf(owner) {
+      return this.players.filter((player) => player.index !== owner);
+    }
+
+    /** 仍在场的玩家（本体存活即在场） */
+    alivePlayers() {
+      return this.players.filter((player) => player.body && player.body.alive);
+    }
+
     getActors(playerIdx) {
       const p = this.players[playerIdx];
       if (!p) return [];
@@ -263,13 +314,47 @@
       return list;
     }
 
+    /**
+     * “对方”＝除自己以外的全体玩家的存活实体（本体 + 替身）。
+     * 普通攻击的候选目标、诅咒币持有者等都基于这个列表。
+     */
     enemiesOf(owner) {
-      const p = this.players[1 - owner];
-      if (!p) return [];
       const list = [];
-      if (p.body && p.body.alive) list.push(p.body);
-      if (p.standin && p.standin.alive) list.push(p.standin);
+      for (const player of this.othersOf(owner)) {
+        if (player.body && player.body.alive) list.push(player.body);
+        if (player.standin && player.standin.alive) list.push(player.standin);
+      }
       return list;
+    }
+
+    /**
+     * 判定失败时的承接者：本体失败 → 其他所有玩家的本体；替身失败 → 其他所有玩家的替身。
+     * 双人模式下就是“对方本体 / 对方替身”，多人模式下是全体其他玩家的对应实体。
+     */
+    backlashReceivers(entity) {
+      const out = [];
+      for (const player of this.othersOf(entity.owner)) {
+        const receiver = entity.isStandin ? player.standin : player.body;
+        if (receiver && receiver.alive) out.push(receiver);
+      }
+      return out;
+    }
+
+    /** 自伤触发反甲时的去向：其他所有玩家的本体 */
+    opponentBodies(owner) {
+      return this.othersOf(owner)
+        .map((player) => player.body)
+        .filter((body) => body && body.alive);
+    }
+
+    /** 从 from 之后按顺序找下一个仍在场的玩家 */
+    nextPlayerAfter(from) {
+      const count = this.players.length;
+      for (let step = 1; step <= count; step += 1) {
+        const candidate = this.players[(from + step) % count];
+        if (candidate && candidate.body && candidate.body.alive) return candidate.index;
+      }
+      return from;
     }
 
     canUseSkill(entity, skillId) {
@@ -325,7 +410,23 @@
 
     // ---------------------------------------------------------- 行动
 
+    /**
+     * 当前玩家在结算过程中被淘汰时（例如反甲连锁打死了正在行动的玩家），
+     * 把回合交给下一位仍在场的玩家，避免出现没人能行动的僵局。
+     */
+    ensureTurnReady() {
+      if (this.over || !this.started) return;
+      const current = this.players[this.current];
+      if (current && current.body && !current.body.alive) {
+        this.current = this.nextPlayerAfter(this.current);
+        this.turn += 1;
+        this.announceTurn();
+        this.emitChanged();
+      }
+    }
+
     async act(playerIdx, actorId, skillId) {
+      this.ensureTurnReady();
       if (!this.started || this.over || this.busy) return false;
       if (playerIdx !== this.current) return false;
 
@@ -357,16 +458,7 @@
             noThief: true
           });
         } else {
-          const opponent = this.players[1 - playerIdx];
-          const receiver = actor.isStandin ? opponent.standin : opponent.body;
-          if (receiver && receiver.alive && this.canUseSkill(receiver, skillId)) {
-            this.log(`判定失败！由 ${receiver.name} 代为使用【${skill.name}】`, 'fail');
-            this.occupy(receiver, skillId);
-            await this.resolveSkill(receiver, skillId, { forced: true, originalActor: actor });
-          } else {
-            const why = receiver && receiver.alive ? '对方技能槽已满，无法容纳' : '对方没有可承接的实体';
-            this.log(`判定失败，技能没有生效（${why}）`, 'fail');
-          }
+          await this.applyBacklash(actor, skillId);
         }
 
         if (!this.over) {
@@ -381,6 +473,7 @@
     }
 
     async pass(playerIdx) {
+      this.ensureTurnReady();
       if (!this.started || this.over || this.busy) return false;
       if (playerIdx !== this.current) return false;
 
@@ -405,37 +498,103 @@
       return true;
     }
 
+    /**
+     * 判定失败时的反用：技能交给“对方”——也就是除自己以外的所有玩家。
+     * 本体失败 → 全体其他玩家的本体；替身失败 → 全体其他玩家的替身。
+     * 谁的技能槽容纳得下，谁就代为使用（并占用自己的技能槽）。
+     */
+    async applyBacklash(actor, skillId) {
+      const skill = SKILL_BY_ID.get(skillId);
+      const receivers = this.backlashReceivers(actor);
+
+      if (!receivers.length) {
+        const why = actor.isStandin ? '其他玩家都没有替身' : '没有可承接的实体';
+        this.log(`判定失败，技能没有生效（${why}）`, 'fail');
+        return;
+      }
+
+      let used = 0;
+      for (const receiver of receivers) {
+        if (this.over) return;
+        if (!receiver || !receiver.alive || !this.canUseSkill(receiver, skillId)) {
+          this.log(`${receiver ? receiver.name : '该实体'} 无法承接【${skill.name}】（技能槽已满或实体不存在）`, 'fail');
+          continue;
+        }
+        used += 1;
+        this.log(`判定失败！由 ${receiver.name} 代为使用【${skill.name}】`, 'fail');
+        this.occupy(receiver, skillId);
+        await this.resolveSkill(receiver, skillId, { forced: true, originalActor: actor });
+      }
+
+      if (!used) {
+        this.log('判定失败，技能没有生效（对方技能槽已满，无法容纳）', 'fail');
+      }
+    }
+
     async resolveSkill(actor, skillId, ctx) {
       if (skillId === 0) {
-        let target = null;
+        // 反用普通攻击只会打回原使用者本人
         if (ctx.forced) {
-          target = ctx.originalActor || null;
-        } else {
-          const candidates = this.enemiesOf(actor.owner);
-          target = await this.pickTarget(actor, candidates, '选择普通攻击的目标');
+          const target = ctx.originalActor || null;
+          if (target && target.alive) {
+            await this.damage(actor, target, 1, {});
+          } else {
+            this.log('没有可攻击的目标', 'fail');
+          }
+          return;
         }
-        if (target && target.alive) {
-          await this.damage(actor, target, 1, {});
-        } else {
-          this.log('没有可攻击的目标', 'fail');
-        }
+        await this.attackGroup(actor);
         return;
       }
 
       await this.applyEffect(actor, skillId);
     }
 
-    async pickTarget(actor, candidates, purpose) {
-      if (!candidates.length) return null;
-      if (candidates.length === 1) return candidates[0];
+    /**
+     * 普通攻击：选择攻击“全体对手本体”还是“全体对手替身”，
+     * 一次对组内每个存活实体造成 1 点伤害。
+     */
+    async attackGroup(actor) {
+      const enemies = this.enemiesOf(actor.owner);
+      const options = [
+        { id: 'bodies', kind: 'body', label: '全体对手本体', entities: enemies.filter((entity) => !entity.isStandin) },
+        { id: 'standins', kind: 'standin', label: '全体对手替身', entities: enemies.filter((entity) => entity.isStandin) }
+      ];
+
+      const option = await this.pickTargetGroup(actor, options, '选择普通攻击的目标');
+      if (!option) {
+        this.log('没有可攻击的目标', 'fail');
+        return;
+      }
+
+      const targets = option.entities.filter((entity) => entity.alive);
+      this.log(`${actor.name} 的【普通攻击】攻击${option.label}：${targets.map((entity) => entity.name).join('、')}`, 'attack');
+
+      for (let i = 0; i < targets.length; i += 1) {
+        if (this.over || !targets[i].alive) continue;
+        if (i > 0) await this.beat(260);
+        await this.damage(actor, targets[i], 1, {});
+      }
+    }
+
+    async pickTargetGroup(actor, options, purpose) {
+      const usable = options.filter((option) => option.entities && option.entities.length);
+      if (!usable.length) return null;
+      if (usable.length === 1) return usable[0];
+
       const id = await this.io.chooseTarget({
         playerIdx: actor.owner,
         actor: this.describe(actor),
         purpose,
-        candidates: candidates.map((e) => this.describe(e))
+        options: usable.map((option) => ({
+          id: option.id,
+          kind: option.kind,
+          label: option.label,
+          entities: option.entities.map((entity) => this.describe(entity))
+        }))
       });
-      const picked = this.getEntity(id);
-      return picked && picked.alive ? picked : candidates[0];
+
+      return usable.find((option) => option.id === id) || usable[0];
     }
 
     async applyEffect(entity, skillId) {
@@ -492,7 +651,7 @@
       if (entity.split) {
         const remaining = entity.split.remaining;
         entity.split = null;
-        entity.maxHp = entity.isStandin ? STANDIN_MAX_HP : BODY_MAX_HP;
+        entity.maxHp = entity.isStandin ? STANDIN_MAX_HP : this.bodyMaxHp();
         entity.hp = Math.max(1, remaining);
         this.log(`${entity.name} 解除拆分，生命值重置为 ${entity.hp}/${entity.maxHp}`, 'effect');
         return;
@@ -566,8 +725,8 @@
     collectCoinInterventions(roller, used) {
       const coins = [];
       const rollerPlayer = this.players[roller.owner];
-      const opponent = this.players[1 - roller.owner];
 
+      // 幸运币：掷数者自己的实体可以重掷自己的结果
       for (const entity of [rollerPlayer.body, rollerPlayer.standin]) {
         const id = entity ? `${entity.id}:lucky` : null;
         if (entity && entity.alive && entity.lucky > 0 && !used.has(id)) {
@@ -582,17 +741,20 @@
         }
       }
 
-      for (const entity of [opponent.body, opponent.standin]) {
-        const id = entity ? `${entity.id}:curse` : null;
-        if (entity && entity.alive && entity.curse > 0 && !used.has(id)) {
-          coins.push({
-            id,
-            coin: 'curse',
-            holderId: entity.id,
-            holderName: entity.name,
-            playerIdx: entity.owner,
-            holder: this.describe(entity)
-          });
+      // 诅咒币：对方＝除掷数者以外的所有玩家，都可以干预这次随机数
+      for (const player of this.othersOf(roller.owner)) {
+        for (const entity of [player.body, player.standin]) {
+          const id = entity ? `${entity.id}:curse` : null;
+          if (entity && entity.alive && entity.curse > 0 && !used.has(id)) {
+            coins.push({
+              id,
+              coin: 'curse',
+              holderId: entity.id,
+              holderName: entity.name,
+              playerIdx: entity.owner,
+              holder: this.describe(entity)
+            });
+          }
         }
       }
 
@@ -764,19 +926,23 @@
       // 反甲：即使护盾挡下伤害也会触发。“对方”是反甲拥有者的对手；
       // 自伤时同样会触发，并把伤害反射给对手。
       if (!real && target.thorns > 0 && !opts.noThorns) {
-        let thornsTarget = null;
+        let thornsTargets = [];
         if (source && source.alive && source.owner !== target.owner) {
-          thornsTarget = source;
+          thornsTargets = [source];
         } else {
-          const opponent = this.players[1 - target.owner];
-          thornsTarget = [opponent.body, opponent.standin].find((entity) => entity && entity.alive) || null;
+          // 自伤：打向其他所有玩家的本体
+          thornsTargets = this.opponentBodies(target.owner);
         }
 
-        if (thornsTarget) {
+        if (thornsTargets.length) {
           target.thorns = 0;
-          this.log(`${target.name} 的【反甲】反击 ${thornsTarget.name}`, 'effect');
+          const names = thornsTargets.map((entity) => entity.name).join('、');
+          this.log(`${target.name} 的【反甲】反击 ${names}`, 'effect');
           await this.beat(340);
-          await this.damage(target, thornsTarget, 1, { depth: depth + 1, isThorns: true });
+          for (const thornsTarget of thornsTargets) {
+            if (this.over || !thornsTarget.alive) continue;
+            await this.damage(target, thornsTarget, 1, { depth: depth + 1, isThorns: true });
+          }
         }
       }
 
@@ -860,7 +1026,7 @@
           break;
         case 'split': {
           entity.split = null;
-          entity.maxHp = entity.isStandin ? STANDIN_MAX_HP : BODY_MAX_HP;
+          entity.maxHp = entity.isStandin ? STANDIN_MAX_HP : this.bodyMaxHp();
           entity.hp = Math.max(1, data.remaining);
           this.log(`${entity.name} 的拆分被解除，生命值变为 ${entity.hp}/${entity.maxHp}`, 'effect');
           break;
@@ -901,7 +1067,7 @@
           if (entity.split) {
             const remaining = entity.split.remaining;
             entity.split = null;
-            entity.maxHp = entity.isStandin ? STANDIN_MAX_HP : BODY_MAX_HP;
+            entity.maxHp = entity.isStandin ? STANDIN_MAX_HP : this.bodyMaxHp();
             entity.hp = Math.max(1, remaining);
             this.log(`${entity.name} 已处于拆分状态，再次获得拆分时解除拆分`, 'effect');
           } else {
@@ -1020,7 +1186,7 @@
       entity.alive = true;
       const stats = this.stats[entity.owner];
       if (stats) stats.revives += 1;
-      entity.maxHp = entity.isStandin ? STANDIN_MAX_HP : BODY_MAX_HP;
+      entity.maxHp = entity.isStandin ? STANDIN_MAX_HP : this.bodyMaxHp();
       const splitRemaining = opts.splitRemaining;
       entity.hp = splitRemaining != null ? Math.max(1, splitRemaining) : entity.maxHp;
       this.clearEffects(entity);
@@ -1062,14 +1228,29 @@
         return;
       }
 
+      // 本体出局：多人模式下只是退场，场上只剩一人时才结束战斗
+      const survivors = this.alivePlayers();
+      this.log(`${owner.name} 的生命值耗尽且复活失败，${this.isMultiplayer() ? '退场' : '战斗结束'}！`, 'death');
+
+      if (survivors.length > 1) {
+        this.log(`场上还剩 ${survivors.length} 人：${survivors.map((player) => player.name).join('、')}`, 'system');
+        this.emitChanged();
+        return;
+      }
+
       this.over = true;
-      this.winner = 1 - entity.owner;
-      this.log(`${owner.name} 的生命值耗尽且复活失败，战斗结束！`, 'death');
-      this.log(`${this.players[this.winner].name} 获得胜利！`, 'system');
-      this.io.onGameOver({
-        winner: this.winner,
-        winnerName: this.players[this.winner].name
-      });
+      // 反甲连锁可能同时带走最后两人，此时判平局
+      this.winner = survivors.length === 1 ? survivors[0].index : null;
+      if (this.winner === null) {
+        this.log('无人存活，本局平局', 'system');
+        this.io.onGameOver({ winner: null, winnerName: null, draw: true });
+      } else {
+        this.log(`${this.players[this.winner].name} 获得胜利！`, 'system');
+        this.io.onGameOver({
+          winner: this.winner,
+          winnerName: this.players[this.winner].name
+        });
+      }
       this.emitChanged();
     }
 
@@ -1102,7 +1283,7 @@
         return;
       }
 
-      this.current = 1 - this.current;
+      this.current = this.nextPlayerAfter(this.current);
       this.turn += 1;
       this.announceTurn();
       this.emitChanged();
@@ -1140,9 +1321,15 @@
     makeEntity,
     effectChips,
     skillName,
+    normalizeNames,
+    bodyMaxHpFor,
     BODY_MAX_HP,
     BODY_SLOTS,
     STANDIN_MAX_HP,
-    STANDIN_SLOTS
+    STANDIN_SLOTS,
+    MIN_PLAYERS,
+    MAX_PLAYERS,
+    MODE_DUEL,
+    MODE_BATTLE
   };
 });

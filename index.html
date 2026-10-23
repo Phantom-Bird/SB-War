@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="杀币战争：用硬币判定驱动的双人技能对战游戏。">
+  <meta name="description" content="杀币战争：用硬币判定驱动的技能对战游戏，支持双人对战与 3–4 人混战。">
   <title>杀币战争 · SB WAR</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -31,14 +31,14 @@
   </header>
 
   <main class="board" id="board">
-    <section class="player-panel p0" id="panel0" aria-label="玩家一"></section>
+    <div class="side side-left" id="sideLeft"></div>
 
     <section class="center-column">
       <div class="action-card" id="actionArea">
         <div class="empty-state">
           <div class="empty-mark">⚔</div>
           <h2>等待开战</h2>
-          <p>填写两位玩家的名字，然后掷币决定先手。</p>
+          <p>选择对战模式并填写玩家名字，然后掷币决定先手。</p>
         </div>
       </div>
 
@@ -51,7 +51,7 @@
       </div>
     </section>
 
-    <section class="player-panel p1" id="panel1" aria-label="玩家二"></section>
+    <div class="side side-right" id="sideRight"></div>
   </main>
 
   <div class="roll-stage hidden" id="rollStage" aria-live="assertive">
@@ -78,32 +78,71 @@
       </div>
       <p class="eyebrow">COIN-FLIP DUEL</p>
       <h1 class="setup-title">杀币战争</h1>
-      <p class="setup-lead">每人 3 点生命，随机先手。判定成功才能出招，失败则可能被对方反用。四个技能槽，十一张牌，绝境中还有一次复活判定。</p>
+      <p class="setup-lead">生命值上限为人数 + 1，随机先手。判定成功才能出招，失败则可能被对方反用。四个技能槽，十一张牌，绝境中还有一次复活判定。</p>
 
-      <div class="setup-fields">
-        <label>
-          <span>玩家一</span>
-          <input id="name0" maxlength="12" value="玩家一" autocomplete="off">
-        </label>
-        <label>
-          <span>玩家二</span>
-          <input id="name1" maxlength="12" value="玩家二" autocomplete="off">
-        </label>
+      <div class="setup-block">
+        <span class="setup-block-label">对战模式</span>
+        <div class="mode-tabs" id="modeTabs" role="group" aria-label="对战模式">
+          <button class="mode-btn active" type="button" data-count="2">双人对战</button>
+          <button class="mode-btn" type="button" data-count="3">三人混战</button>
+          <button class="mode-btn" type="button" data-count="4">四人混战</button>
+        </div>
+        <p class="setup-hint" id="modeHint">双人同屏，或勾选“电脑”让 AI 接管任意席位。</p>
       </div>
 
-      <label class="ai-toggle" for="aiToggle">
-        <input type="checkbox" id="aiToggle">
-        <span class="ai-toggle-switch" aria-hidden="true"></span>
-        <span class="ai-toggle-copy">
-          <strong>电脑对手</strong>
-          <small>玩家二由简单启发式 AI 控制</small>
-        </span>
-      </label>
+      <div class="setup-fields" id="setupFields">
+        <!-- 每个席位单独成组：名字与“电脑”开关各自只绑定一个控件，
+             避免同一个 label 套多个输入时点击开关只是聚焦名字框 -->
+        <div class="setup-row" data-row="0">
+          <label class="setup-row-label" for="name0">玩家一</label>
+          <input type="text" id="name0" maxlength="12" value="玩家一" autocomplete="off">
+          <label class="setup-seat" for="ai0">
+            <input type="checkbox" id="ai0">
+            <span class="setup-seat-tag">电脑</span>
+          </label>
+        </div>
+
+        <div class="setup-row" data-row="1">
+          <label class="setup-row-label" for="name1">玩家二</label>
+          <input type="text" id="name1" maxlength="12" value="玩家二" autocomplete="off">
+          <label class="setup-seat" for="ai1">
+            <input type="checkbox" id="ai1">
+            <span class="setup-seat-tag">电脑</span>
+          </label>
+        </div>
+
+        <div class="setup-row hidden" data-row="2">
+          <label class="setup-row-label" for="name2">玩家三</label>
+          <input type="text" id="name2" maxlength="12" value="玩家三" autocomplete="off">
+          <label class="setup-seat" for="ai2">
+            <input type="checkbox" id="ai2">
+            <span class="setup-seat-tag">电脑</span>
+          </label>
+        </div>
+
+        <div class="setup-row hidden" data-row="3">
+          <label class="setup-row-label" for="name3">玩家四</label>
+          <input type="text" id="name3" maxlength="12" value="玩家四" autocomplete="off">
+          <label class="setup-seat" for="ai3">
+            <input type="checkbox" id="ai3">
+            <span class="setup-seat-tag">电脑</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="setup-block" id="difficultyBlock" hidden>
+        <span class="setup-block-label">电脑难度</span>
+        <div class="mode-tabs" id="difficultyTabs" role="group" aria-label="电脑难度">
+          <button class="mode-btn active" type="button" data-level="1">难度 1 · 简单</button>
+          <button class="mode-btn" type="button" data-level="2">难度 2 · 进阶</button>
+        </div>
+        <p class="setup-hint" id="difficultyHint">简单：靠固定优先级加概率试探。进阶：先算威胁与收益再出手，硬币也会区分这手该不该花。</p>
+      </div>
 
       <button class="btn primary wide" id="startBtn" type="button">开始战斗</button>
       <button class="link-btn" id="setupRulesBtn" type="button">先看看规则</button>
 
-      <p class="setup-foot">本地对战 · 双人同屏或单人挑战电脑 · 无网络依赖</p>
+      <p class="setup-foot">本地对战 · 双人同屏或 3–4 人混战 · 无网络依赖</p>
     </div>
   </div>
 
@@ -122,6 +161,8 @@
       <div class="coin-confirm-row" id="coinConfirmRow">
         <button class="coin-confirm" data-confirm="0" id="coinConfirm0" type="button">玩家一 · 不再使用</button>
         <button class="coin-confirm" data-confirm="1" id="coinConfirm1" type="button">玩家二 · 不再使用</button>
+        <button class="coin-confirm hidden" data-confirm="2" id="coinConfirm2" type="button">玩家三 · 不再使用</button>
+        <button class="coin-confirm hidden" data-confirm="3" id="coinConfirm3" type="button">玩家四 · 不再使用</button>
       </div>
       <p class="coin-hint" id="coinHint">所有玩家都确认后，以最后一次掷出的结果为准。</p>
     </div>
@@ -131,7 +172,7 @@
   <div class="overlay target-overlay hidden" id="targetOverlay">
     <div class="modal target-modal" role="dialog" aria-modal="true" aria-labelledby="targetTitle">
       <p class="eyebrow">选择目标</p>
-      <h2 id="targetTitle">选择普通攻击的目标</h2>
+      <h2 id="targetTitle">选择攻击目标组</h2>
       <div class="target-list" id="targetList"></div>
     </div>
   </div>
@@ -149,14 +190,28 @@
       <div class="rules-body">
         <section class="rule-section">
           <h3>胜负与回合</h3>
-          <p>双方各有 <strong>3 点生命值</strong>，由随机数决定先手，然后轮流行动。每个回合，当前玩家选择<strong>本体或替身</strong>使用一个技能，也可以跳过。生命值耗尽时进行复活判定；失败则游戏结束。</p>
+          <p>每位玩家的<strong>生命值上限为人数 + 1</strong>（2 人 3 点、3 人 4 点、4 人 5 点），由随机数决定先手，然后轮流行动。每个回合，当前玩家选择<strong>本体或替身</strong>使用一个技能，也可以跳过。生命值耗尽时进行复活判定；失败则该玩家退场。</p>
+          <p><strong>双人对战</strong>时，对方退场即战斗结束；<strong>多人混战</strong>时，只剩最后一名玩家时战斗结束，已退场的玩家不再行动。</p>
+        </section>
+
+        <section class="rule-section">
+          <h3>普通攻击</h3>
+          <p>普通攻击<strong>一次覆盖一组目标</strong>：在<strong>全体对手本体</strong>与<strong>全体对手替身</strong>之间二选一，组内每个存活实体各受到 1 点伤害。</p>
+          <p class="rule-note">因此生命值上限随人数递增（人数 + 1），用来平衡一次攻击波及多个目标带来的压力。判定失败时普通攻击例外：反噬自身 1 点伤害，不会由对方承接。</p>
+        </section>
+
+        <section class="rule-section">
+          <h3>多人模式</h3>
+          <p>多人混战支持 3–4 名玩家，规则与双人一致，唯一的变化是<strong>“对方”的含义</strong>。</p>
+          <p class="rule-note">双人模式里“对方”只有一个人；多人模式里<strong>对方＝除自己以外的所有玩家</strong>。因此普通攻击的攻击组会覆盖全部对手，诅咒币由所有对手持有者共同干预；自伤触发反甲时，伤害会打向所有对手的本体。</p>
+          <p class="rule-note">技能反噬同理：<strong>本体判定失败 → 其他所有玩家的本体代为使用；替身判定失败 → 其他所有玩家的替身代为使用</strong>。谁的技能槽容纳得下，谁就发动该技能。</p>
         </section>
 
         <section class="rule-section">
           <h3>判定与技能槽</h3>
           <p>每次使用技能（包括普通攻击）都要先掷一次 <strong>0 / 1 判定</strong>。成功时技能正常生效；失败时，若对方技能槽能够容纳该技能（未满或已拥有该技能），则<strong>视为对方使用了该技能</strong>，自己不算使用。</p>
           <p>每人拥有 <strong>4 个技能槽</strong>。每使用一个新技能占用 1 槽；槽满后只能使用已记录的技能或普通攻击。普通攻击不占槽。复活成功时，清空所有技能槽。</p>
-          <p class="rule-note">被对方“反用”的技能同样会占用对方的技能槽。判定失败时：本体失败由对方本体承接；替身失败由对方替身承接，若对方没有替身则落空。普通攻击是例外：判定失败时反噬自身 1 点伤害，不会由对方承接。</p>
+          <p class="rule-note">被“反用”的技能同样会占用承接者的技能槽。判定失败时：本体失败由对方承接；替身失败由对方替身承接，若对方没有替身则落空（多人模式下则由全体其他玩家的对应实体分别承接）。普通攻击是例外：判定失败时反噬自身 1 点伤害，不会由对方承接。</p>
         </section>
 
         <section class="rule-section">
@@ -177,6 +232,7 @@
           <p><strong>硬币干预面板</strong>：每次随机数生成后，所有可用硬币会一次性展示；只有持有可用硬币的玩家需要确认，硬币用尽后面板自动关闭，并以最后一次掷出的结果为准。</p>
           <p><strong>复活干预</strong>：复活判定和负生命惩罚判定同样属于随机数生成，因此幸运币与诅咒币都可以改变这些判定的结果。</p>
           <p><strong>替身</strong>：1 点生命、2 个技能槽，效果与本体完全独立；可以行动、被选为目标、进行复活判定。每位玩家同时只能拥有一个替身。</p>
+          <p><strong>多人模式</strong>：“对方”指除自己以外的所有玩家——攻击目标覆盖全体对手的本体与替身，诅咒币由所有对手干预，反甲自伤反射打向所有对手本体，技能反噬由全体对手的对应实体分别承接。</p>
         </section>
 
         <section class="rule-section implementation">
@@ -187,8 +243,10 @@
             <li>真实伤害不会触发护盾、反甲、韧性、小偷，也不会被磨刀增幅或消耗磨刀层数；它仍会正常触发复活判定。</li>
             <li>小偷在伤害结算后触发，因此护盾、反甲、复活等先结算，之后再从目标剩余的效果中随机偷取。</li>
             <li>普通攻击失败时反噬自身 1 点伤害，不再由对方承接；替身普通攻击失败同样会反噬，避免无风险普攻。这次自伤仍会触发磨刀、护盾、韧性、反甲等效果；小偷不会因自伤从自己身上偷取。</li>
-            <li>反甲的“对对方造成伤害”按对手理解：自伤触发反甲时打向对方本体，而不是继续打自己；这使失败普攻也可以作为反伤手段。</li>
+            <li>反甲的“对对方造成伤害”按对手理解：自伤触发反甲时打向对方本体，而不是继续打自己；这使失败普攻也可以作为反伤手段。多人模式下这一条会扩展为打向<strong>所有对手的本体</strong>。</li>
+            <li>多人混战（3–4 人）中“对方＝全体其他玩家”；双人对战的行为与原规则完全一致。<strong>全员阵亡</strong>（例如反甲连锁同时带走最后两人）判为平局。</li>
             <li>“跳过行动”是为操作便利加入的选项，原规则未禁止主动结束回合。</li>
+            <li>普通攻击由“对某一个目标造成 1 点伤害”改为<strong>覆盖一整组</strong>（全体对手本体 / 全体对手替身），生命值上限因此调整为<strong>人数 + 1</strong>；这是对多人模式的平衡，不是原文规则。</li>
           </ul>
         </section>
       </div>

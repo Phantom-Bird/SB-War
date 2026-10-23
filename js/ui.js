@@ -4,14 +4,16 @@
 (function () {
   'use strict';
 
-  const { Game, SKILLS, SKILL_BY_ID, effectChips } = window.SBWar;
+  const { Game, SKILLS, SKILL_BY_ID, effectChips, MAX_PLAYERS, MIN_PLAYERS } = window.SBWar;
   const AI = window.SBWarAI;
+  const DIFFICULTY = (AI && AI.DIFFICULTY) || { EASY: 1, HARD: 2 };
+  const DEFAULT_DIFFICULTY = DIFFICULTY.EASY;
 
   const $ = (id) => document.getElementById(id);
   const el = {
     board: $('board'),
-    panel0: $('panel0'),
-    panel1: $('panel1'),
+    sideLeft: $('sideLeft'),
+    sideRight: $('sideRight'),
     actionArea: $('actionArea'),
     log: $('log'),
     turnStatus: $('turnStatus'),
@@ -28,9 +30,12 @@
     rollCoinHint: $('rollCoinHint'),
     effectToast: $('effectToast'),
     setupOverlay: $('setupOverlay'),
-    name0: $('name0'),
-    name1: $('name1'),
-    aiToggle: $('aiToggle'),
+    setupFields: $('setupFields'),
+    modeTabs: $('modeTabs'),
+    modeHint: $('modeHint'),
+    difficultyBlock: $('difficultyBlock'),
+    difficultyTabs: $('difficultyTabs'),
+    difficultyHint: $('difficultyHint'),
     startBtn: $('startBtn'),
     setupRulesBtn: $('setupRulesBtn'),
     rulesBtn: $('rulesBtn'),
@@ -46,13 +51,12 @@
     coinResult: $('coinResult'),
     coinList: $('coinList'),
     coinConfirmRow: $('coinConfirmRow'),
-    coinConfirm0: $('coinConfirm0'),
-    coinConfirm1: $('coinConfirm1'),
     coinHint: $('coinHint'),
     targetOverlay: $('targetOverlay'),
     targetTitle: $('targetTitle'),
     targetList: $('targetList'),
     victoryOverlay: $('victoryOverlay'),
+    victoryModal: document.querySelector('.victory-modal'),
     victoryTitle: $('victoryTitle'),
     victorySub: $('victorySub'),
     victoryReport: $('victoryReport'),
@@ -60,19 +64,36 @@
     victorySetupBtn: $('victorySetupBtn')
   };
 
+  // 席位输入：固定 4 行，按模式显示
+  const seats = Array.from({ length: MAX_PLAYERS }, (_, index) => ({
+    index,
+    row: document.querySelector(`.setup-row[data-row="${index}"]`),
+    name: $(`name${index}`),
+    ai: $(`ai${index}`)
+  }));
+  // 硬币确认按钮：coinConfirm0..3（多人时全部参与确认）
+  const coinConfirms = Array.from({ length: MAX_PLAYERS }, (_, index) => $(`coinConfirm${index}`));
+
+  const DEFAULT_NAMES = ['玩家一', '玩家二', '玩家三', '玩家四'];
+
   let game = null;
   let selectedActor = null;
   let lastTurn = -1;
   let lastRenderedLogId = 0;
   let victoryShown = false;
   let startSequence = 0;
-  let aiPlayerIndex = null;
+  let aiPlayers = new Set();
   let aiTimer = null;
   let aiScheduled = false;
   let aiActing = false;
   let effectToastTimer = null;
   let lastEffectSignature = new Map();
   let changedEffects = new Map();
+  let panelNodes = [];
+  let seatCount = MIN_PLAYERS;
+  let aiLevel = DEFAULT_DIFFICULTY;
+  /** 难度 2 会给出这一手的判断理由，展示给玩家看 */
+  let aiReason = '';
 
   let activeRoll = null;
   const REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -80,7 +101,17 @@
   let pendingCoin = null;
   let pendingTarget = null;
 
-  let savedNames = ['玩家一', '玩家二'];
+  let savedNames = DEFAULT_NAMES.slice(0, MIN_PLAYERS);
+
+  /** 席位序号对应的中文序号标签（设置界面用） */
+  const SEAT_LABELS = ['一', '二', '三', '四'];
+  const seatLabel = (index) => `玩家${SEAT_LABELS[index] || index + 1}`;
+  /** 面板上的英文席位标签 */
+  const PLAYER_LABELS = ['ONE', 'TWO', 'THREE', 'FOUR'];
+  const playerTag = (index) => `PLAYER ${PLAYER_LABELS[index] || index + 1}`;
+
+  const isAI = (index) => aiPlayers.has(index);
+  const hasAI = () => aiPlayers.size > 0;
 
   // ---------------------------------------------------------- 工具
 
@@ -93,6 +124,18 @@
 
   function hideOverlay(node) {
     if (node) node.classList.add('hidden');
+  }
+
+  /**
+   * 只在内容真的变化时才写 innerHTML。
+   * 否则每次 render 都会重建节点，节点上的 CSS 动画（呼吸、脉冲、弹出）
+   * 会不断从 0 重新开始，看起来就像“动画跟着渲染帧率走而不是跟着真实时间走”。
+   */
+  function setHTML(node, html) {
+    if (!node) return;
+    if (node.__sbwarHtml === html) return;
+    node.__sbwarHtml = html;
+    node.innerHTML = html;
   }
 
   function playerName(index) {
@@ -136,69 +179,63 @@
     return html;
   }
 
+  /** 技能槽：紧凑小方块，只放图标，名字放进 title */
   function slotsHTML(entity) {
     let html = '';
     for (let i = 0; i < entity.slotCap; i += 1) {
       const skillId = entity.slots[i];
       if (skillId === undefined) {
-        html += '<div class="slot empty" aria-hidden="true"></div>';
+        html += '<span class="slot empty" aria-hidden="true"></span>';
         continue;
       }
       const skill = SKILL_BY_ID.get(skillId);
       if (!skill) continue;
-      html += `<div class="slot filled" title="${esc(skill.name)}：${esc(skill.desc)}">
+      html += `<span class="slot filled" title="${esc(skill.name)}：${esc(skill.desc)}">
         <span class="slot-ico">${skill.icon}</span>
-        <span class="slot-name">${esc(skill.name)}</span>
-      </div>`;
+      </span>`;
     }
     return html;
   }
 
-  function effectsHTML(entity, emptyText = '暂无效果') {
+  /** 已生效效果：紧凑小药丸，图标 + 名称 + 数值 */
+  function effectsHTML(entity) {
     const chips = effectChips(entity);
-    if (!chips.length) return `<span class="effects-empty">${esc(emptyText)}</span>`;
+    if (!chips.length) return '<span class="effects-empty">无</span>';
     return chips
-      .map(
-        (chip) => {
-          const pop = changedEffects.get(entity.id) && changedEffects.get(entity.id).has(chip.key) ? 'effect-pop' : '';
-          return `<span class="effect-token tone-${chip.tone} ${pop}" data-effect="${chip.key}" title="${esc(chip.title)}">
+      .map((chip) => {
+        const pop = changedEffects.get(entity.id) && changedEffects.get(entity.id).has(chip.key) ? 'effect-pop' : '';
+        return `<span class="effect-token tone-${chip.tone} ${pop}" data-effect="${chip.key}" title="${esc(chip.title)}">
           <span class="effect-icon">${chip.icon}</span>
           <span class="effect-name">${esc(chip.name)}</span>
           ${chip.value ? `<span class="effect-value">${esc(chip.value)}</span>` : ''}
         </span>`;
-        }
-      )
+      })
       .join('');
+  }
+
+  /** 紧凑信息行：小标题 + 内容 */
+  function tokenRow(label, content, extra = '') {
+    return `<div class="token-row ${extra}">
+      <span class="token-label">${label}</span>
+      <span class="token-content">${content}</span>
+    </div>`;
   }
 
   function entityHTML(entity, options = {}) {
     const isActive = options.active ? 'is-actor' : '';
     const isDead = entity.alive ? '' : 'is-dead';
     const hp = Math.max(0, entity.hp);
-    const splitCaption = entity.split
-      ? `阶段 ${entity.split.total - entity.split.remaining + 1} / ${entity.split.total}`
-      : '生命值';
-    const effectCount = effectChips(entity).length;
+    const phase = entity.split ? `阶段 ${entity.split.total - entity.split.remaining + 1}/${entity.split.total}` : '';
     return `
       <div class="entity ${isActive} ${isDead}">
-        <div class="hp-block">
-          <div class="hp-line">
-            <span class="hp-value">${hp}</span>
-            <span class="hp-max">/ ${entity.maxHp}</span>
-            <span class="hp-caption ${entity.split ? 'phase' : ''}">${splitCaption}</span>
-          </div>
-          <div class="hp-pips">${pipsHTML(entity)}</div>
+        <div class="hp-line">
+          <span class="hp-value">${hp}</span>
+          <span class="hp-max">/ ${entity.maxHp}</span>
+          ${phase ? `<span class="hp-caption phase">${phase}</span>` : ''}
         </div>
-
-        <div class="effects-block">
-          <div class="mini-label"><span>已生效效果</span><em>${effectCount ? `${effectCount} 项` : '—'}</em></div>
-          <div class="effects-grid">${effectsHTML(entity)}</div>
-        </div>
-
-        <div class="slots-block">
-          <div class="mini-label"><span>技能槽</span><em>${entity.slots.length} / ${entity.slotCap}</em></div>
-          <div class="slots">${slotsHTML(entity)}</div>
-        </div>
+        <div class="hp-pips">${pipsHTML(entity)}</div>
+        ${tokenRow('效果', effectsHTML(entity))}
+        ${tokenRow('技能槽', slotsHTML(entity))}
       </div>
     `;
   }
@@ -206,30 +243,25 @@
   function standinHTML(standin, isCurrent) {
     if (!standin) {
       return `
-        <div class="standin-card">
-          <div class="standin-head">
-            <span class="standin-title">替身</span>
-            <span class="standin-none">未召唤</span>
-          </div>
-          <div class="standin-none">使用【召唤】获得 1 HP、2 技能槽的独立单位</div>
+        <div class="standin-card is-empty">
+          <span class="standin-title">替身</span>
+          <span class="standin-none">未召唤 · 【召唤】可获得 1 HP、2 技能槽的独立单位</span>
         </div>
       `;
     }
 
     const active = isCurrent && selectedActor === standin.id;
-    const effectCount = effectChips(standin).length;
+    const phase = standin.split ? `阶段 ${standin.split.total - standin.split.remaining + 1}/${standin.split.total}` : '';
     return `
       <div class="standin-card has-standin ${active ? 'is-actor' : ''}">
-        <div class="standin-head">
-          <span class="standin-title">替身</span>
-          <span class="standin-hp">生命 ${Math.max(0, standin.hp)} / ${standin.maxHp}${standin.split ? ` · 阶段 ${standin.split.remaining}/${standin.split.total}` : ''}</span>
+        <div class="hp-line">
+          <span class="hp-kind">替身</span>
+          <span class="hp-value">${Math.max(0, standin.hp)}</span>
+          <span class="hp-max">/ ${standin.maxHp}</span>
+          ${phase ? `<span class="hp-caption phase">${phase}</span>` : ''}
         </div>
-        <div class="mini-label"><span>已生效效果</span><em>${effectCount ? `${effectCount} 项` : '—'}</em></div>
-        <div class="effects-grid compact">${effectsHTML(standin)}</div>
-        <div class="standin-slots">
-          <div class="mini-label"><span>技能槽</span><em>${standin.slots.length} / ${standin.slotCap}</em></div>
-          <div class="slots two">${slotsHTML(standin)}</div>
-        </div>
+        ${tokenRow('效果', effectsHTML(standin))}
+        ${tokenRow('技能槽', slotsHTML(standin))}
       </div>
     `;
   }
@@ -238,11 +270,14 @@
     const isCurrent = game.current === index && !game.over;
     const body = player.body;
     const bodyActive = isCurrent && selectedActor === body.id;
+    const tags = [];
+    if (isAI(index)) tags.push('<span class="ai-tag">电脑</span>');
+    if (!body.alive) tags.push('<span class="dead-tag">已退场</span>');
     return `
       <div class="panel-head">
         <div class="player-identity">
-          <div class="player-label">PLAYER ${index === 0 ? 'ONE' : 'TWO'}</div>
-          <h2 class="player-name">${esc(player.name)}${aiPlayerIndex === index ? ' <span class="ai-tag">电脑</span>' : ''}${body.alive ? '' : ' <span class="dead-tag">阵亡</span>'}</h2>
+          <div class="player-label">${playerTag(index)}</div>
+          <h2 class="player-name">${esc(player.name)}${tags.join('')}</h2>
         </div>
         ${isCurrent ? '<span class="turn-chip">行动中</span>' : ''}
       </div>
@@ -288,13 +323,14 @@
       `;
     }
 
-    if (aiPlayerIndex !== null && game.current === aiPlayerIndex) {
+    if (isAI(game.current)) {
+      const hard = aiLevel === DIFFICULTY.HARD;
       return `
         <div class="ai-turn">
           <div class="ai-orb">AI</div>
           <p class="eyebrow">AI TURN</p>
-          <h2 class="ai-title">${esc(playerName(aiPlayerIndex))} 正在${game.busy ? '结算' : '思考'}…</h2>
-          <p class="ai-desc">电脑会根据双方生命、效果和技能槽选择行动。</p>
+          <h2 class="ai-title">${esc(playerName(game.current))} 正在${game.busy ? '结算' : '思考'}…</h2>
+          <p class="ai-desc">${hard ? '难度 2 · 进阶电脑：以输出为主，几乎每回合都在普攻，优先集火对方本体。' : '难度 1 · 简单电脑：按固定优先级试探。'}${hard && aiReason ? `判断：${esc(aiReason)}。` : '电脑会参考场上所有玩家的生命、效果和技能槽。'}</p>
           <div class="ai-thinking" aria-hidden="true"><span></span><span></span><span></span></div>
         </div>
       `;
@@ -365,18 +401,60 @@
     el.turnBadge.textContent = `T${game.turn}`;
   }
 
+  /**
+ * 玩家面板按人数分列：2 人时左右各一，3–4 人时在左右两列堆叠。
+ * 面板节点只在人数变化时重建，平时只更新内容。
+ */
+  function layoutSides(count) {
+    const leftCount = Math.ceil(count / 2);
+    return { leftCount, rightStart: leftCount };
+  }
+
+  function syncPanelNodes(count) {
+    const { leftCount } = layoutSides(count);
+    const wanted = Array.from({ length: count }, (_, index) => ({
+      index,
+      side: index < leftCount ? 'left' : 'right'
+    }));
+
+    const sameLayout =
+      panelNodes.length === count &&
+      panelNodes.every((node, index) => node.side === wanted[index].side && node.node.parentElement);
+
+    if (sameLayout) return;
+
+    panelNodes.forEach((entry) => entry.node.remove());
+    el.sideLeft.innerHTML = '';
+    el.sideRight.innerHTML = '';
+    panelNodes = wanted.map((entry) => {
+      const node = document.createElement('section');
+      node.className = `player-panel p${entry.index}`;
+      node.id = `panel${entry.index}`;
+      node.setAttribute('aria-label', seatLabel(entry.index));
+      (entry.side === 'left' ? el.sideLeft : el.sideRight).appendChild(node);
+      return { index: entry.index, side: entry.side, node };
+    });
+  }
+
   function renderPanels() {
     if (!game) {
-      el.panel0.innerHTML = idlePanelHTML(savedNames[0] || '玩家一', 'P1');
-      el.panel1.innerHTML = idlePanelHTML(savedNames[1] || '玩家二', 'P2');
-      el.panel0.classList.remove('is-active');
-      el.panel1.classList.remove('is-active');
+      const count = seatCount;
+      syncPanelNodes(count);
+      panelNodes.forEach((entry) => {
+        const name = savedNames[entry.index] || seatLabel(entry.index);
+        setHTML(entry.node, idlePanelHTML(name, playerTag(entry.index)));
+        entry.node.classList.remove('is-active');
+      });
       return;
     }
-    el.panel0.innerHTML = panelHTML(game.players[0], 0);
-    el.panel1.innerHTML = panelHTML(game.players[1], 1);
-    el.panel0.classList.toggle('is-active', game.current === 0 && !game.over);
-    el.panel1.classList.toggle('is-active', game.current === 1 && !game.over);
+
+    syncPanelNodes(game.players.length);
+    panelNodes.forEach((entry) => {
+      const player = game.players[entry.index];
+      if (!player) return;
+      setHTML(entry.node, panelHTML(player, entry.index));
+      entry.node.classList.toggle('is-active', game.current === entry.index && !game.over);
+    });
   }
 
   function idlePanelHTML(name, tag) {
@@ -396,7 +474,7 @@
 
   function renderLog() {
     if (!game) {
-      el.log.innerHTML = '';
+      setHTML(el.log, '');
       lastRenderedLogId = 0;
       return;
     }
@@ -405,15 +483,18 @@
     const previousMax = lastRenderedLogId;
     lastRenderedLogId = entries.length ? entries[entries.length - 1].id : previousMax;
 
-    el.log.innerHTML = entries
-      .map((entry) => {
-        const fresh = entry.id > previousMax ? 'log-new' : '';
-        return `<div class="log-entry ${entry.type} ${fresh}">
+    setHTML(
+      el.log,
+      entries
+        .map((entry) => {
+          const fresh = entry.id > previousMax ? 'log-new' : '';
+          return `<div class="log-entry ${entry.type} ${fresh}">
           <span class="log-turn">${entry.turn}</span>
           <span class="log-text">${esc(entry.text)}</span>
         </div>`;
-      })
-      .join('');
+        })
+        .join('')
+    );
 
     // 每次战斗记录更新都翻到最下方
     el.log.scrollTop = el.log.scrollHeight;
@@ -459,7 +540,7 @@
     prepareEffectChanges();
     renderStatus();
     renderPanels();
-    el.actionArea.innerHTML = actionHTML();
+    setHTML(el.actionArea, actionHTML());
     renderLog();
 
     if (game && game.over && !victoryShown) {
@@ -476,7 +557,7 @@
 
   async function performSkill(skillId) {
     if (!game || game.busy || game.over) return;
-    if (aiPlayerIndex !== null && game.current === aiPlayerIndex) return;
+    if (isAI(game.current)) return;
     const actorId = selectedActor || defaultActorId(game.current);
     if (!actorId) return;
     const ok = await game.act(game.current, actorId, skillId);
@@ -485,7 +566,7 @@
 
   async function performPass() {
     if (!game || game.busy || game.over) return;
-    if (aiPlayerIndex !== null && game.current === aiPlayerIndex) return;
+    if (isAI(game.current)) return;
     await game.pass(game.current);
   }
 
@@ -499,8 +580,9 @@
   }
 
   function scheduleAITurn() {
-    if (!AI || !game || game.over || game.busy || aiPlayerIndex === null) return;
-    if (game.current !== aiPlayerIndex) return;
+    if (!AI || !game || game.over || game.busy || !hasAI()) return;
+    const current = game.current;
+    if (!isAI(current)) return;
     if (aiScheduled || aiActing) return;
     if (!el.rulesOverlay.classList.contains('hidden')) return;
 
@@ -509,22 +591,24 @@
     aiTimer = window.setTimeout(() => {
       aiTimer = null;
       aiScheduled = false;
-      if (game !== instance || game.over || game.busy || game.current !== aiPlayerIndex) return;
+      if (game !== instance || game.over || game.busy || game.current !== current) return;
       if (!el.rulesOverlay.classList.contains('hidden')) return;
-      runAITurn(instance);
+      runAITurn(instance, current);
     }, REDUCED_MOTION ? 350 : 900);
   }
 
-  async function runAITurn(instance) {
-    if (aiActing || !AI || game !== instance || game.over || game.busy || game.current !== aiPlayerIndex) return;
+  async function runAITurn(instance, playerIndex) {
+    if (aiActing || !AI || game !== instance || game.over || game.busy || game.current !== playerIndex) return;
     aiActing = true;
     try {
-      const action = AI.chooseAction(game, aiPlayerIndex);
+      aiReason = '';
+      const action = AI.chooseAction(game, playerIndex, Math.random, { level: aiLevel });
+      aiReason = (action && action.why) || '';
       if (!action) {
-        await game.pass(aiPlayerIndex);
+        await game.pass(playerIndex);
       } else {
-        const ok = await game.act(aiPlayerIndex, action.actorId, action.skillId);
-        if (!ok && !game.over) await game.pass(aiPlayerIndex);
+        const ok = await game.act(playerIndex, action.actorId, action.skillId);
+        if (!ok && !game.over) await game.pass(playerIndex);
       }
     } catch (error) {
       console.error('AI 行动失败', error);
@@ -577,11 +661,14 @@
         return;
       }
 
-      const humanCoins = aiPlayerIndex !== null ? payload.coins.filter((coin) => coin.playerIdx !== aiPlayerIndex) : payload.coins;
+      const humanCoins = payload.coins.filter((coin) => !isAI(coin.playerIdx));
 
       // AI 的硬币由启发式策略自动决定；决定使用时直接重掷，不打开给人类的面板
-      if (aiPlayerIndex !== null && AI) {
-        const aiCoin = AI.chooseCoin(payload, aiPlayerIndex);
+      if (hasAI() && AI) {
+        // 多个电脑时按席位顺序逐个决定，用掉一枚后会重新进入本钩子，轮到下一位
+        const aiCoin = Array.from(aiPlayers)
+          .map((index) => AI.chooseCoin(payload, index, { level: aiLevel }))
+          .find(Boolean);
         if (aiCoin) {
           let settledAI = false;
           const finishAI = () => {
@@ -593,7 +680,7 @@
               el.coinResult.textContent = '重掷中…';
               el.coinResult.className = 'coin-result';
               el.coinHint.textContent = '电脑正在使用硬币重掷…';
-              [el.coinConfirm0, el.coinConfirm1].forEach((button) => {
+              coinConfirms.forEach((button) => {
                 button.disabled = true;
               });
               el.coinList.querySelectorAll('button').forEach((button) => {
@@ -646,7 +733,7 @@
       el.coinList.innerHTML = payload.coins
         .map((coin) => {
           const lucky = coin.coin === 'lucky';
-          const aiOwned = aiPlayerIndex !== null && coin.playerIdx === aiPlayerIndex;
+          const aiOwned = isAI(coin.playerIdx);
           return `<button class="coin-card ${lucky ? 'lucky' : 'curse'} ${aiOwned ? 'ai-reserved' : ''}" type="button" data-coin-id="${esc(coin.id)}" ${aiOwned ? 'disabled' : ''}>
             <span class="coin-card-icon">${lucky ? '☆' : '⇌'}</span>
             <span class="coin-card-copy">
@@ -658,29 +745,29 @@
         })
         .join('');
 
-      const confirmed = [false, false];
-      const confirmButtons = [el.coinConfirm0, el.coinConfirm1];
-      confirmButtons.forEach((button, index) => {
+      const confirmed = new Map();
+      coinConfirms.forEach((button, index) => {
         const required = coinPlayers.has(index);
+        confirmed.set(index, false);
         button.classList.toggle('hidden', !required);
         button.disabled = !required;
         button.classList.remove('confirmed');
       });
       const updateConfirm = () => {
-        confirmButtons.forEach((button, index) => {
+        coinConfirms.forEach((button, index) => {
           if (!coinPlayers.has(index)) return;
-          button.textContent = `${playerName(index)} · ${confirmed[index] ? '已确认' : '不再使用'}`;
-          button.classList.toggle('confirmed', confirmed[index]);
+          button.textContent = `${playerName(index)} · ${confirmed.get(index) ? '已确认' : '不再使用'}`;
+          button.classList.toggle('confirmed', confirmed.get(index));
         });
       };
       const toggleConfirm = (index) => {
         if (!coinPlayers.has(index) || el.coinModal.classList.contains('is-rolling')) return;
-        confirmed[index] = !confirmed[index];
+        confirmed.set(index, !confirmed.get(index));
         updateConfirm();
-        if ([...coinPlayers].every((player) => confirmed[player])) finish({ done: true });
+        if ([...coinPlayers].every((player) => confirmed.get(player))) finish({ done: true });
       };
 
-      confirmButtons.forEach((button, index) => {
+      coinConfirms.forEach((button, index) => {
         button.onclick = () => toggleConfirm(index);
       });
       updateConfirm();
@@ -690,7 +777,7 @@
         el.coinResult.textContent = '重掷中…';
         el.coinResult.className = 'coin-result';
         el.coinHint.textContent = '正在重掷，请稍候…';
-        confirmButtons.forEach((button) => {
+        coinConfirms.forEach((button) => {
           button.disabled = true;
         });
         el.coinList.querySelectorAll('button').forEach((button) => {
@@ -712,7 +799,7 @@
         }
       };
 
-      const aiNote = aiPlayerIndex !== null ? ' 电脑的硬币由 AI 自动处理。' : '';
+      const aiNote = hasAI() ? ' 电脑的硬币由 AI 自动处理。' : '';
       el.coinHint.textContent = (revive
         ? '持有可用硬币的玩家确认后，本次复活判定以最后一次掷出的结果为准。'
         : '持有可用硬币的玩家确认后，本次随机数以最后一次掷出的结果为准。') + aiNote;
@@ -720,13 +807,16 @@
       showOverlay(el.coinOverlay);
       const firstCard = el.coinList.querySelector('.coin-card');
       if (firstCard) firstCard.focus({ preventScroll: true });
-      else el.coinConfirm0.focus({ preventScroll: true });
+      else {
+        const firstConfirm = coinConfirms.find((button) => !button.classList.contains('hidden'));
+        if (firstConfirm) firstConfirm.focus({ preventScroll: true });
+      }
     });
   }
 
   function chooseTarget(payload) {
-    if (aiPlayerIndex !== null && payload.playerIdx === aiPlayerIndex) {
-      const targetId = AI ? AI.chooseTarget(payload.candidates) : payload.candidates[0] && payload.candidates[0].id;
+    if (isAI(payload.playerIdx)) {
+      const targetId = AI ? AI.chooseTarget(payload.options, { level: aiLevel }) : payload.options[0] && payload.options[0].id;
       return new Promise((resolve) => {
         window.setTimeout(() => resolve(targetId), REDUCED_MOTION ? 150 : 550);
       });
@@ -736,7 +826,7 @@
       if (pendingTarget) {
         const old = pendingTarget;
         pendingTarget = null;
-        old(payload.candidates[0] ? payload.candidates[0].id : null);
+        old(payload.options[0] ? payload.options[0].id : null);
       }
 
       let settled = false;
@@ -750,20 +840,32 @@
       pendingTarget = finish;
 
       el.targetTitle.textContent = payload.purpose;
-      el.targetList.innerHTML = payload.candidates
-        .map((candidate) => {
-          const effects = candidate.effects.length
-            ? candidate.effects.map((chip) => `<span class="target-stat">${chip.icon} ${esc(chip.label)}</span>`).join('')
-            : '<span class="target-stat">无效果</span>';
-          return `
-            <button class="target-card" type="button" data-target="${candidate.id}">
-              <span class="target-orb ${candidate.isStandin ? 'standin' : ''}">${candidate.isStandin ? '⊕' : '本'}</span>
-              <span class="target-copy">
-                <span class="target-name">${esc(candidate.name)} <span class="target-kind">${candidate.isStandin ? '替身' : '本体'}</span></span>
-                <span class="target-stats">
-                  <span class="target-stat">生命 ${Math.max(0, candidate.hp)} / ${candidate.maxHp}</span>
-                  ${effects}
+      el.targetList.innerHTML = payload.options
+        .map((option) => {
+          const members = option.entities
+            .map((entity) => {
+              const effects = entity.effects.length
+                ? entity.effects.map((chip) => `<span class="target-stat">${chip.icon} ${esc(chip.label)}</span>`).join('')
+                : '<span class="target-stat">无效果</span>';
+              return `
+                <span class="target-member">
+                  <span class="target-member-head">
+                    <span class="target-orb ${entity.isStandin ? 'standin' : ''}">${entity.isStandin ? '⊕' : '本'}</span>
+                    <span class="target-member-name">${esc(entity.name)}</span>
+                    <span class="target-stat">生命 ${Math.max(0, entity.hp)} / ${entity.maxHp}</span>
+                  </span>
+                  <span class="target-stats">${effects}</span>
                 </span>
+              `;
+            })
+            .join('');
+          return `
+            <button class="target-card group" type="button" data-target="${esc(option.id)}">
+              <span class="target-copy">
+                <span class="target-name">${esc(option.label)}
+                  <span class="target-kind">${option.entities.length} 个目标</span>
+                </span>
+                <span class="target-members">${members}</span>
               </span>
               <span class="target-arrow">→</span>
             </button>
@@ -804,29 +906,55 @@
     cancelPendingPrompts();
     cancelRollAnimation();
     resetEffectVisuals();
+    aiReason = '';
     hideOverlay(el.setupOverlay);
     hideOverlay(el.victoryOverlay);
     hideOverlay(el.coinOverlay);
     hideOverlay(el.targetOverlay);
     hideOverlay(el.rulesOverlay);
 
-    if (Object.prototype.hasOwnProperty.call(options, 'aiPlayerIndex')) {
-      aiPlayerIndex = options.aiPlayerIndex === 0 || options.aiPlayerIndex === 1 ? options.aiPlayerIndex : null;
+    // 名单：按传入长度决定人数（2–4 人），末尾的空名字会被裁掉
+    const list = Array.isArray(names) ? names : [names];
+    const raw = [];
+    for (let i = 0; i < MAX_PLAYERS; i += 1) {
+      raw.push(list[i] == null ? '' : String(list[i]).trim());
+    }
+    while (raw.length > MIN_PLAYERS && !raw[raw.length - 1]) raw.pop();
+    savedNames = raw.map((name, index) => name || seatLabel(index));
+    seatCount = savedNames.length;
+
+    // AI 席位：兼容旧的 aiPlayerIndex，也支持 aiPlayerIndexes / 每席位开关
+    const nextAI = new Set();
+    if (Array.isArray(options.aiPlayerIndexes)) {
+      options.aiPlayerIndexes.forEach((index) => {
+        if (Number.isInteger(index) && index >= 0 && index < seatCount) nextAI.add(index);
+      });
+    } else if (Object.prototype.hasOwnProperty.call(options, 'aiPlayerIndex')) {
+      const index = options.aiPlayerIndex;
+      if (Number.isInteger(index) && index >= 0 && index < seatCount) nextAI.add(index);
     } else {
-      aiPlayerIndex = el.aiToggle && el.aiToggle.checked ? 1 : null;
+      seats.forEach((seat) => {
+        if (seat.index < seatCount && seat.ai && seat.ai.checked) nextAI.add(seat.index);
+      });
+    }
+    aiPlayers = nextAI;
+
+    // 难度：优先用调用方传入的，其次读设置界面
+    if (options.difficulty !== undefined && options.difficulty !== null) {
+      aiLevel = Number(options.difficulty) === DIFFICULTY.HARD ? DIFFICULTY.HARD : DIFFICULTY.EASY;
+      applyDifficulty(aiLevel);
     }
 
-    savedNames = [names[0] || '玩家一', names[1] || '玩家二'];
     try {
       window.localStorage.setItem('sbwar.names', JSON.stringify(savedNames));
-      window.localStorage.setItem('sbwar.ai', el.aiToggle && el.aiToggle.checked ? '1' : '0');
+      window.localStorage.setItem('sbwar.seats', JSON.stringify(Array.from(aiPlayers)));
     } catch (error) {
       /* 忽略隐私模式下的存储错误 */
     }
 
     let firstPlayer = options.firstPlayer;
-    if (firstPlayer !== 0 && firstPlayer !== 1) {
-      firstPlayer = Math.random() < 0.5 ? 0 : 1;
+    if (!Number.isInteger(firstPlayer) || firstPlayer < 0 || firstPlayer >= seatCount) {
+      firstPlayer = Math.floor(Math.random() * seatCount);
       game = null;
       selectedActor = null;
       lastTurn = -1;
@@ -867,7 +995,7 @@
         chooseCoinIntervention: (payload) =>
           game === instance ? chooseCoinIntervention(payload) : Promise.resolve({ done: true }),
         chooseTarget: (payload) =>
-          game === instance ? chooseTarget(payload) : Promise.resolve(payload.candidates[0] ? payload.candidates[0].id : null)
+          game === instance ? chooseTarget(payload) : Promise.resolve(payload.options[0] ? payload.options[0].id : null)
       }
     });
 
@@ -888,8 +1016,9 @@
     cancelPendingPrompts();
     cancelRollAnimation();
     resetEffectVisuals();
+    aiReason = '';
     game = null;
-    aiPlayerIndex = null;
+    aiPlayers = new Set();
     selectedActor = null;
     lastTurn = -1;
     lastRenderedLogId = 0;
@@ -901,17 +1030,20 @@
     hideOverlay(el.rulesOverlay);
     showOverlay(el.setupOverlay);
 
-    el.name0.value = savedNames[0] || '玩家一';
-    el.name1.value = savedNames[1] || '玩家二';
+    applySeatCount(savedNames.length);
+    seats.forEach((seat) => {
+      seat.name.value = savedNames[seat.index] || seatLabel(seat.index);
+      seat.ai.checked = aiPlayers.has(seat.index);
+    });
     render();
-    window.setTimeout(() => el.name0.focus({ preventScroll: true }), 60);
+    window.setTimeout(() => seats[0].name.focus({ preventScroll: true }), 60);
   }
 
   function victoryReportHTML() {
     const stats = game.stats || [];
-    const columns = [0, 1].map((index) => {
+    const columns = game.players.map((player, index) => {
       const s = stats[index] || {};
-      const body = game.players[index].body;
+      const body = player.body;
       const rows = [
         ['造成伤害', s.damageDealt || 0],
         ['受到伤害', s.damageTaken || 0],
@@ -924,10 +1056,11 @@
         ['召唤替身', s.summons || 0],
         ['最终生命', `${Math.max(0, body.hp)} / ${body.maxHp}`]
       ];
-      return `<div class="report-col ${index === 0 ? 'p0' : 'p1'}">
+      const result = index === game.winner ? '胜者' : body.alive ? (game.isMultiplayer() ? '存活' : '败者') : '退场';
+      return `<div class="report-col p${index}">
         <div class="report-col-head">
-          <span>${esc(game.players[index].name)}</span>
-          <em>${index === game.winner ? '胜者' : '败者'}</em>
+          <span>${esc(player.name)}</span>
+          <em>${result}</em>
         </div>
         <div class="report-stats">
           ${rows.map(([label, value]) => `<span>${label}<b>${value}</b></span>`).join('')}
@@ -942,7 +1075,7 @@
 
     return `
       <div class="report-head"><span>战报</span><small>共 ${game.turn} 回合</small></div>
-      <div class="report-grid">${columns.join('')}</div>
+      <div class="report-grid ${game.isMultiplayer() ? 'is-battle' : ''}">${columns.join('')}</div>
       <div class="report-recent">
         <div class="report-recent-title">最后记录</div>
         ${recent}
@@ -952,9 +1085,18 @@
 
   function showVictory() {
     if (!game || !game.over) return;
-    el.victoryTitle.textContent = `${playerName(game.winner)} 胜利`;
-    el.victorySub.textContent = `第 ${game.turn} 回合结束 · 对手生命耗尽且复活失败`;
+    const draw = game.winner === null || game.winner === undefined;
+    const multiplayer = game.isMultiplayer();
+    el.victoryTitle.textContent = draw ? '平局' : `${playerName(game.winner)} 胜利`;
+    el.victorySub.textContent = draw
+      ? `第 ${game.turn} 回合结束 · 全员阵亡`
+      : `第 ${game.turn} 回合结束 · ${multiplayer ? '其余玩家生命耗尽且复活失败' : '对手生命耗尽且复活失败'}`;
     el.victoryReport.innerHTML = victoryReportHTML();
+    if (el.victoryReport.querySelector('.report-grid.is-battle')) {
+      el.victoryModal.classList.add('is-battle');
+    } else {
+      el.victoryModal.classList.remove('is-battle');
+    }
     showOverlay(el.victoryOverlay);
     el.againBtn.focus({ preventScroll: true });
   }
@@ -963,8 +1105,11 @@
     if (!game || !payload.roller || payload.kind === 'first') return false;
     const roller = game.getEntity(payload.roller.id);
     if (roller && roller.lucky > 0) return true;
-    const opponent = game.players[1 - payload.roller.owner];
-    return [opponent.body, opponent.standin].some((entity) => entity && entity.alive && entity.curse > 0);
+    // 诅咒币：除掷数者以外的所有玩家都可以干预
+    return game
+      .othersOf(payload.roller.owner)
+      .flatMap((player) => [player.body, player.standin])
+      .some((entity) => entity && entity.alive && entity.curse > 0);
   }
 
   function cancelRollAnimation() {
@@ -1106,22 +1251,101 @@
     scheduleAITurn();
   }
 
+  function applySeatCount(count) {
+    const next = Math.max(MIN_PLAYERS, Math.min(count, MAX_PLAYERS));
+    seatCount = next;
+    seats.forEach((seat) => {
+      if (seat.row) seat.row.classList.toggle('hidden', seat.index >= next);
+      if (!seat.name.value.trim()) seat.name.value = seatLabel(seat.index);
+    });
+    el.modeTabs.querySelectorAll('.mode-btn').forEach((button) => {
+      button.classList.toggle('active', Number(button.getAttribute('data-count')) === next);
+    });
+    el.modeHint.textContent =
+      next > MIN_PLAYERS
+        ? `多人模式：“对方”＝其余 ${next - 1} 名玩家；本体反噬由他们的本体承接，替身反噬由他们的替身承接。`
+        : '双人同屏，或勾选“电脑”让 AI 接管任意席位。';
+    return next;
+  }
+
+  function currentSeatConfig() {
+    const names = [];
+    const aiPlayerIndexes = [];
+    for (let index = 0; index < seatCount; index += 1) {
+      const seat = seats[index];
+      names.push(seat.name.value.trim() || seatLabel(index));
+      if (seat.ai.checked) aiPlayerIndexes.push(index);
+    }
+    return { names, aiPlayerIndexes };
+  }
+
+  /** 至少勾了一个电脑时才显示难度选择 */
+  function syncDifficultyVisibility() {
+    const anyAI = seats.some((seat) => seat.index < seatCount && seat.ai && seat.ai.checked);
+    if (el.difficultyBlock) el.difficultyBlock.hidden = !anyAI;
+  }
+
+  function applyDifficulty(level) {
+    aiLevel = Number(level) === DIFFICULTY.HARD ? DIFFICULTY.HARD : DIFFICULTY.EASY;
+    if (el.difficultyTabs) {
+      el.difficultyTabs.querySelectorAll('.mode-btn').forEach((button) => {
+        button.classList.toggle('active', Number(button.getAttribute('data-level')) === aiLevel);
+      });
+    }
+    if (el.difficultyHint) {
+      el.difficultyHint.textContent =
+        aiLevel === DIFFICULTY.HARD
+          ? '进阶：几乎每回合都在普攻并集火对方本体，用替身当缓冲、破盾用异质，硬币只花在关键判定上。'
+          : '简单：靠固定优先级加概率试探，容易浪费技能和硬币。';
+    }
+    try {
+      window.localStorage.setItem('sbwar.difficulty', String(aiLevel));
+    } catch (error) {
+      /* 忽略隐私模式下的存储错误 */
+    }
+    return aiLevel;
+  }
+
   function bindEvents() {
     el.startBtn.addEventListener('click', () => {
-      const names = [el.name0.value.trim() || '玩家一', el.name1.value.trim() || '玩家二'];
-      startGame(names, { aiPlayerIndex: el.aiToggle.checked ? 1 : null });
+      const { names, aiPlayerIndexes } = currentSeatConfig();
+      startGame(names, { aiPlayerIndexes, difficulty: aiLevel });
     });
 
-    [el.name0, el.name1].forEach((input) => {
-      input.addEventListener('keydown', (event) => {
+    seats.forEach((seat) => {
+      if (!seat.name) return;
+      seat.name.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') el.startBtn.click();
+      });
+      if (!seat.ai) return;
+      seat.ai.addEventListener('change', () => {
+        // 勾选电脑时给个默认名字，取消勾选时还原
+        if (seat.ai.checked && seat.name.value.trim() === seatLabel(seat.index)) {
+          seat.name.value = `电脑${seat.index + 1}`;
+        }
+        if (!seat.ai.checked && seat.name.value.trim() === `电脑${seat.index + 1}`) {
+          seat.name.value = seatLabel(seat.index);
+        }
+        syncDifficultyVisibility();
       });
     });
 
-    el.aiToggle.addEventListener('change', () => {
-      if (el.aiToggle.checked && el.name1.value.trim() === '玩家二') el.name1.value = '电脑';
-      if (!el.aiToggle.checked && el.name1.value.trim() === '电脑') el.name1.value = '玩家二';
+    el.modeTabs.addEventListener('click', (event) => {
+      const button = event.target.closest('.mode-btn');
+      if (!button) return;
+      applySeatCount(Number(button.getAttribute('data-count')));
+      syncDifficultyVisibility();
+      if (!game) render();
+      seats[0].name.focus({ preventScroll: true });
     });
+
+    if (el.difficultyTabs) {
+      el.difficultyTabs.addEventListener('click', (event) => {
+        const button = event.target.closest('.mode-btn');
+        if (!button) return;
+        applyDifficulty(button.getAttribute('data-level'));
+      });
+    }
 
     el.setupRulesBtn.addEventListener('click', openRules);
     el.rulesBtn.addEventListener('click', openRules);
@@ -1138,7 +1362,9 @@
       if (game.over || window.confirm('当前对局尚未结束，确定要重开吗？')) resetToSetup();
     });
 
-    el.againBtn.addEventListener('click', () => startGame(savedNames));
+    el.againBtn.addEventListener('click', () =>
+    startGame(savedNames, { aiPlayerIndexes: Array.from(aiPlayers), difficulty: aiLevel })
+  );
     el.victorySetupBtn.addEventListener('click', resetToSetup);
 
     // 行动区事件委托
@@ -1171,18 +1397,36 @@
   function loadNames() {
     try {
       const stored = JSON.parse(window.localStorage.getItem('sbwar.names') || 'null');
-      if (Array.isArray(stored) && stored.length === 2) {
-        savedNames = [String(stored[0] || '玩家一'), String(stored[1] || '玩家二')];
+      if (Array.isArray(stored) && stored.length) {
+        savedNames = DEFAULT_NAMES.map((fallback, index) =>
+          index < MAX_PLAYERS ? String(stored[index] || fallback) : fallback
+        );
       }
-      if (window.localStorage.getItem('sbwar.ai') === '1') {
-        el.aiToggle.checked = true;
+      const seatsStored = JSON.parse(window.localStorage.getItem('sbwar.seats') || 'null');
+      if (Array.isArray(seatsStored)) {
+        seatsStored.forEach((index) => {
+          if (seats[index] && seats[index].ai) seats[index].ai.checked = true;
+        });
       }
     } catch (error) {
       /* 忽略读取失败 */
     }
-    el.name0.value = savedNames[0];
-    el.name1.value = savedNames[1];
-    if (el.aiToggle.checked && el.name1.value === '玩家二') el.name1.value = '电脑';
+
+    const storedCount = Math.max(MIN_PLAYERS, Math.min(savedNames.length, MAX_PLAYERS));
+    while (savedNames.length > storedCount) savedNames.pop();
+    applySeatCount(storedCount);
+    seats.forEach((seat) => {
+      seat.name.value = savedNames[seat.index] || seatLabel(seat.index);
+    });
+
+    let storedLevel = DEFAULT_DIFFICULTY;
+    try {
+      storedLevel = Number(window.localStorage.getItem('sbwar.difficulty'));
+    } catch (error) {
+      /* 忽略读取失败 */
+    }
+    applyDifficulty(Number(storedLevel) === DIFFICULTY.HARD ? DIFFICULTY.HARD : DEFAULT_DIFFICULTY);
+    syncDifficultyVisibility();
   }
 
   function init() {
@@ -1196,12 +1440,23 @@
       start: (names, options) => startGame(names || savedNames, options || {}),
       getGame: () => game,
       render,
-      reset: resetToSetup
+      reset: resetToSetup,
+      getAIPlayers: () => Array.from(aiPlayers),
+      getDifficulty: () => aiLevel,
+      /** 难度 2 上一手的判断理由（用于展示与测试） */
+      getAIReason: () => aiReason,
+      setDifficulty: (level) => applyDifficulty(level)
     };
 
     const params = new URLSearchParams(window.location.search);
     if (params.get('demo') === '1') {
       startGame(['玩家一', '玩家二']);
+    }
+    if (params.get('demo') === 'battle') {
+      startGame(['玩家一', '玩家二', '玩家三', '玩家四'], { aiPlayerIndexes: [1, 2, 3], firstPlayer: 0, difficulty: DIFFICULTY.HARD });
+    }
+    if (params.get('demo') === 'hard') {
+      startGame(['人类', '进阶电脑'], { firstPlayer: 0, aiPlayerIndexes: [1], difficulty: DIFFICULTY.HARD });
     }
   }
 

@@ -1,6 +1,6 @@
 # 杀币战争 · AI 交接文档
 
-> 面向接手本项目的其他 AI / 开发者。当前版本已经可玩：双人同屏、单人 vs 电脑、完整技能与硬币流程、动画、战报和自动化测试。
+> 面向接手本项目的其他 AI / 开发者。当前版本已经可玩：双人同屏、单人 vs 电脑（难度 1 / 难度 2 两档）、3–4 人混战、完整技能与硬币流程、动画、战报和自动化测试。
 >
 > 最后更新时间：2026-10-23
 
@@ -13,6 +13,7 @@
 - 无构建工具、无第三方运行时依赖。
 - 直接双击 [`index.html`](index.html) 即可运行；也可 `pnpm start` 启动零依赖静态服务器。
 - 规则引擎与 DOM 解耦，可单独用 Node.js 测试；AI 也是纯逻辑模块。
+- 规则本身是双人的；多人模式通过一条约定扩展而来：**“对方”＝除自己以外的所有玩家**。
 - 中文 UI；代码注释与 README 使用中文。
 
 ## 2. 快速开始
@@ -31,23 +32,30 @@ pnpm test           # node tests/all.test.cjs
 pnpm test:ui        # 需要本机 Chrome 或 Edge
 ```
 
-当前测试规模：**51 项**（23 核心规则 + 21 边界规则 + 7 AI 策略）。
+当前测试规模：**95 项**（23 核心规则 + 21 边界规则 + 18 多人模式 + 7 难度 1 策略 + 23 难度 2 策略 + 3 多人回归）。
 
 ## 3. 文件职责
 
 | 文件 | 职责 |
 | --- | --- |
-| `index.html` | 页面骨架、规则手册、设置、硬币/目标/战报弹层 |
+| `index.html` | 页面骨架、规则手册、模式与席位设置、硬币/目标/战报弹层 |
 | `styles.css` | 深色主题、响应式布局、动画、效果图标、战报样式 |
 | `js/engine.js` | 纯规则引擎（UMD）：状态、技能、判定、伤害、硬币、复活、统计 |
-| `js/ai.js` | 简单启发式 AI（UMD）：选人、选技能、选目标、硬币策略 |
+| `js/ai.js` | 启发式 AI（UMD）：难度 1 简单 / 难度 2 进阶，选人、选技能、选目标、硬币策略；`HARD_TUNE` 是可扫描的调参表 |
 | `js/ui.js` | 渲染、事件、弹层、动画调度、AI 回合调度、战报 |
 | `tests/engine.test.cjs` | 核心规则测试 |
 | `tests/engine.edge.test.cjs` | 边界/交互规则测试 |
-| `tests/ai.test.cjs` | AI 策略测试 |
+| `tests/multiplayer.test.cjs` | 多人模式测试 |
+| `tests/ai.test.cjs` | 难度 1 的 AI 策略测试 |
+| `tests/ai-hard.test.cjs` | 难度 2 的 AI 策略测试（含出手结构统计回归） |
 | `tests/all.test.cjs` | 单进程运行全部测试 |
 | `scripts/serve.cjs` | 零依赖静态服务器 |
 | `scripts/ui-smoke.cjs` | 无头 Chrome + CDP 冒烟测试（截图写入 `.ui-screens/`） |
+| `scripts/ai-arena.cjs` | AI 对局模拟：不同难度 / 不同人数的胜率 |
+| `scripts/ai-diagnose.cjs` | AI 行为诊断：技能使用、伤害、回合明细 |
+| `scripts/ai-sweep.cjs` / `ai-sweep-battle.cjs` / `ai-sweep-final.cjs` | 参数扫描（双人 / 多人 / 合并） |
+| `scripts/probe-mechanics.cjs` / `probe-hp.cjs` | 规则交互与有效生命的实测探针 |
+| `scripts/ai-trace.cjs` / `ai-trace-battle.cjs` | 逐步决策追踪（调参时定位问题用） |
 | `docs/` | README 使用的界面截图 |
 | `HANDOFF.md` | 本文件 |
 
@@ -62,9 +70,12 @@ const game = new SBWar.Game({
 });
 
 game.start(['玩家一', '玩家二'], { firstPlayer: 0 });
+game.start(['甲', '乙', '丙', '丁'], { firstPlayer: 2 });   // 3–4 人混战
 ```
 
-- `firstPlayer` 可省略：引擎会用 `rng()` 随机决定先手。
+- `firstPlayer` 可省略：引擎会用 `rng()` 随机决定先手（多人时为 `floor(rng() * 人数)`）。
+- `names` 长度决定人数：`normalizeNames` 会裁掉末尾空名字，并把空位补成“玩家N”；人数夹在 `MIN_PLAYERS(2)` 与 `MAX_PLAYERS(4)` 之间。
+- `game.mode` 为 `'duel'` 或 `'battle'`，`game.isMultiplayer()` 是更常用的判断入口。
 - UI 的正常开局会先播放先手动画，再把结果作为 `firstPlayer` 传入。
 - 引擎不依赖浏览器 API，可在 Node 中直接运行。
 
@@ -80,6 +91,8 @@ player = {
   standin: Entity | null
 }
 ```
+
+多人模式下 `game.players` 有 3–4 项，实体 id 为 `p0/p1/p2/p3`，替身为 `p0s/p1s/...`。
 
 `Entity` 主要字段：
 
@@ -115,8 +128,21 @@ game.canUseSkill(actor, skillId)
 game.getEntity(id)
 game.describe(entity)
 game.damage(source, target, amount, opts) // async，伤害链
-game.stats                               // 战报统计
+game.stats                               // 战报统计（长度＝人数）
 game.logs
+```
+
+**多人相关（扩展新规则时优先复用这些方法，不要自己写 `1 - index`）**：
+
+```js
+game.isMultiplayer()               // 人数 > 2
+game.othersOf(owner)               // 除该玩家外的全体玩家
+game.alivePlayers()                // 本体仍存活的玩家
+game.enemiesOf(owner)              // 全体对手的存活实体（本体 + 替身），攻击候选目标
+game.backlashReceivers(entity)     // 反噬承接者：本体失败→他人本体，替身失败→他人替身
+game.opponentBodies(owner)         // 自伤触发反甲时的去向：他人本体
+game.nextPlayerAfter(from)         // 轮转时跳过已退场玩家
+game.ensureTurnReady()             // 当前玩家已退场时自动交接回合
 ```
 
 UI 和 AI **不要直接修改** `hp`、`slots`、效果字段来推进对局；通过 `act/pass/damage` 等公开方法，避免绕过判定、复活、统计和动画。当前 UI 只在测试/演示状态构造时直接改字段，属于调试行为。
@@ -126,7 +152,7 @@ UI 和 AI **不要直接修改** `hp`、`slots`、效果字段来推进对局；
 ```js
 {
   chooseCoinIntervention(payload), // 返回 { coinId } 或 { done: true }
-  chooseTarget(payload),           // 返回目标 entity id
+  chooseTarget(payload),           // 返回攻击组 id（bodies / standins）
   animateRoll(payload),            // await；播放随机数动画
   pause(ms),                       // await；效果连锁间隔
   onEffect(payload),               // 技能效果生效提示
@@ -170,18 +196,26 @@ UI 和 AI **不要直接修改** `hp`、`slots`、效果字段来推进对局；
 - 硬币用尽后引擎不再调用本钩子。
 - AI 模式下，AI 的硬币由 `js/ai.js` 自动决定；人类面板只显示/确认人类硬币。
 
-#### 目标 payload
+#### 攻击组 payload（普通攻击）
+
+普通攻击不再挑单个目标，而是让行动者在**全体对手本体**与**全体对手替身**之间二选一，因此钩子返回的是**组的 id**，不是实体 id：
 
 ```js
 {
   playerIdx: 行动者 owner,
   actor: describe(actor),
   purpose: '选择普通攻击的目标',
-  candidates: [describe(entity), ...]
+  options: [
+    { id: 'bodies',   kind: 'body',    label: '全体对手本体', entities: [describe(entity), ...] },
+    { id: 'standins', kind: 'standin', label: '全体对手替身', entities: [describe(entity), ...] }
+  ]
 }
 ```
 
-AI 行动时 `playerIdx === aiPlayerIndex`，UI 自动选择，不弹面板。
+- 引擎只会传入非空组；只有一个组时**不会调用本钩子**，直接打那一组。
+- UI 返回组的 id；AI 行动时 UI 用 `SBWarAI.chooseTarget(options)` 自动选择，不弹面板。
+- 返回未知 id 时引擎回退到第一组。
+- 组内实体按顺序逐个结算伤害（中间有停顿），每个实体各自触发护盾/反甲/复活/小偷。
 
 ### 4.5 回合与异步流程
 
@@ -202,16 +236,20 @@ AI 行动时 `playerIdx === aiPlayerIndex`，UI 自动选择，不弹面板。
 
 | 议题 | 当前行为 |
 | --- | --- |
-| 普通攻击失败 | 自伤 1 点，不由对方承接；自伤触发磨刀、护盾、韧性、反甲等，反甲打向对方本体；小偷不从自己身上偷。 |
-| 失败反用 | 本体失败 → 对方本体；替身失败 → 对方替身；没有对应实体则落空。 |
+| **生命值上限** | **人数 + 1**（`bodyMaxHpFor(count)`）；`makeEntity` 接收 `maxHp`，复活/拆分解除都用 `this.bodyMaxHp()`。 |
+| **普通攻击** | 选一个**组**再逐个结算：`attackGroup()` 组装 `bodies` / `standins` 两组 → `pickTargetGroup()` → 依次 `damage()`。判定失败仍反噬自身；被反用的普通攻击只打回原使用者。 |
+| **“对方”** | 双人＝唯一对手；多人（3–4 人）＝除自己以外的所有玩家。攻击组、诅咒币持有者、反甲自伤去向、反噬承接者都按此展开。 |
+| 普通攻击失败 | 自伤 1 点，不由对方承接；自伤触发磨刀、护盾、韧性、反甲等，反甲打向对方本体（多人＝所有对手本体）；小偷不从自己身上偷。 |
+| 失败反用 | 本体失败 → 对方本体；替身失败 → 对方替身；没有对应实体则落空。多人模式下由**其他所有玩家的对应实体依次承接**，各自判断技能槽能否容纳。 |
 | 真实伤害 | 无视护盾、反甲、韧性、小偷；不增幅也不消耗磨刀；正常触发复活。 |
 | 拆分 | 成功保住当前阶段；非最后阶段失败（含**负生命惩罚判定失败**）只失去当前阶段并进入下一阶段；最后阶段失败才出局；最后阶段复活成功解除拆分，生命值 1/3。 |
 | 韧性 | 拥有者自己的回合结束时结算一半（四舍五入）；再次获得时立即结算全部。 |
 | 小偷 | 伤害结算后触发；护盾/反甲/复活先结算，再偷剩余效果。 |
-| 硬币 | 一次性展示所有可用硬币；只有持有可用硬币的玩家需要确认；硬币用尽自动关闭；以最后一次结果为准；复活/惩罚判定同样适用。 |
-| 先手 | 随机；UI 有先手动画。 |
-| 替身 | 每位玩家最多一个；本体死亡即失败；替身独立生命/槽/效果/复活。 |
+| 硬币 | 一次性展示所有可用硬币；只有持有可用硬币的玩家需要确认；硬币用尽自动关闭；以最后一次结果为准；复活/惩罚判定同样适用。幸运币属于掷数者本人，诅咒币属于全体对手。 |
+| 先手 | 随机（多人时在全部玩家中随机）；UI 有先手动画。 |
+| 替身 | 每位玩家最多一个；本体死亡即退场；替身独立生命/槽/效果/复活。 |
 | 伤害连锁 | 反甲链最多递归 16 层。 |
+| 多人收尾 | 被淘汰的玩家不再行动，回合按在场玩家顺序轮转；只剩一人时结束；全员阵亡（如反甲连锁同时带走最后两人）判平局，`winner === null`。 |
 
 近期修复：**拆分状态下负生命惩罚判定失败**现在与阶段复活失败一致，只失去当前阶段，不会直接出局。回归测试在 `tests/engine.edge.test.cjs`。
 
@@ -227,6 +265,18 @@ AI 行动时 `playerIdx === aiPlayerIndex`，UI 自动选择，不弹面板。
 4. 游戏结束 → 520ms 后 `showVictory()`。
 5. `scheduleAITurn()`。
 
+所有写入都走 `setHTML(node, html)`：内容与上次一致时**不碰 DOM**。这不是性能优化，而是动画正确性的前提——见坑位 6（动画会被重渲染打断）。新增渲染分支时请统一使用它，不要直接赋 `innerHTML`。
+
+**面板分列与尺寸（多人 + 紧凑化）**：`.board` 是三列网格，中间是操作区；`#sideLeft` / `#sideRight` 两侧按 `layoutSides(count)` 各放 `ceil(n/2)` 和剩余的面板。面板节点由 `syncPanelNodes(count)` 按人数与分列结果创建，id 固定为 `panel0..panel3`，只有布局变化时才重建，平时只更新 `innerHTML`。新增面板相关内容时不要直接操作 `el.panel0/1`（已不存在）。
+
+面板**按内容高度排布**（`.side { grid-auto-rows: min-content; align-content: start }`），不再像旧版那样被拉伸到整列高度；内部用 `token-row`（小标题 + 内容）组织「效果 / 技能槽」两行：效果是竖排大图标卡片（56×46px），技能槽是紧凑小方块（24×22px），血条 `flex: 1` 撑满整行。
+
+**效果数量上界**：一个技能槽对应一种技能，一种技能至多一种效果，所以**效果数不会超过技能槽数**（本体 4 槽 → ≤4 效果，替身 2 槽 → ≤2 效果）。排版据此假设效果区一行放得下；真要超过时会自然折行，面板变高但不会破版。
+
+实测：常规局面约 **378×190**，本体挂满 4 个效果且替身挂满 2 个效果时约 **378×321**，冒烟测试对这个真实最坏情况硬性断言 **≤ 512×512**（并把尺寸打进测试输出）。加新内容时保持这个上限。
+
+文案一律用全称：面板标签是 `PLAYER ONE/TWO/THREE/FOUR`，行内标签是「效果」「技能槽」，替身图标 `⊕` 只由 `.standin-title::before` 渲染一次——**不要在 HTML 文案里再写一遍 `⊕`**，否则会出现两个。
+
 `actionHTML()` 的三个特殊分支：
 
 - `game.over` → 结算卡。
@@ -238,8 +288,8 @@ AI 行动时 `playerIdx === aiPlayerIndex`，UI 自动选择，不弹面板。
 | 弹层 | 行为 |
 | --- | --- |
 | 掷币/随机数 | `rollStage`，z-index 70，无背景模糊；结果停留 ≥1s |
-| 硬币干预 | 底部停靠 `coinOverlay`，无模糊；只显示持币玩家的确认按钮 |
-| 目标选择 | 底部停靠 `targetOverlay`，无模糊 |
+| 硬币干预 | 底部停靠 `coinOverlay`，无模糊；只显示持币玩家的确认按钮（`coinConfirm0..3`，按人数显隐） |
+| 目标选择 | 底部停靠 `targetOverlay`，无模糊；普通攻击时列出两个攻击组（本体组 / 替身组）及组内成员 |
 | 规则 / 战报 | 居中，半透明背景，无模糊 |
 
 z-index 约定：普通 overlay 60，掷币动画 70，效果提示 80。
@@ -266,35 +316,80 @@ z-index 约定：普通 overlay 60，掷币动画 70，效果提示 80。
 ```
 
 - 只在**实际扣 HP**时累计伤害；护盾完全抵挡/韧性记录不算“造成伤害”，韧性结算时算受到伤害。
-- `showVictory()` 调用 `victoryReportHTML()`，渲染双方统计和最近 10 条日志。
+- `showVictory()` 调用 `victoryReportHTML()`，渲染**每位玩家**一列统计（多人时 `.report-grid.is-battle` 自动收紧列宽）和最近 10 条日志；列尾标注「胜者 / 存活 / 退场」。
+- 多人战报会给弹窗加 `.is-battle`，宽度从 780px 放宽到 `min(96vw, 1120px)`，每列至少 232px——列太窄会让「造成伤害 12」这类标签错误换行。冒烟测试对此有硬性断言。
+- `game.winner === null` 表示平局，标题显示「平局」。
 - 新增统计项时：引擎累计 + `victoryReportHTML` 展示 + 战报测试。
 
 ## 7. AI
 
 ### 7.1 接入方式
 
-- 开局勾选 `#aiToggle` → 玩家二由 AI 控制。
-- `startGame` 设置 `aiPlayerIndex`；`SBWarUI.start` 也可传 `{aiPlayerIndex: 1}` 供测试。
-- AI 是玩家二（UI 层面固定；若扩展到 AI 先手/双方 AI，`aiPlayerIndex` 已支持 0/1）。
-- AI 决策纯逻辑在 `js/ai.js`：
+- 开局界面每个席位都有独立的「电脑」勾选（`#ai0..#ai3`），任意席位都可以交给 AI。
+- 勾选电脑后会出现难度选择（`#difficultyTabs` / `#difficultyHint`），取值 1（简单）或 2（进阶），存在 `localStorage.sbwar.difficulty`。
+- UI 内部用 `aiPlayers`（`Set<number>`）记录电脑席位，`isAI(index)` / `hasAI()` 是判断入口。
+- `SBWarUI.start(names, { aiPlayerIndexes: [1, 2], difficulty: 2 })` 供测试与演示；旧的 `aiPlayerIndex` 单值参数仍然兼容。
+- AI 决策纯逻辑在 `js/ai.js`，**所有入口都带 `{ level }`**（缺省按难度 1 处理，保证旧调用不行为漂移）：
 
 ```js
-SBWarAI.chooseAction(game, playerIdx, rng)
-SBWarAI.chooseTarget(candidates)
-SBWarAI.chooseCoin(payload, aiPlayerIndex)
+SBWarAI.chooseAction(game, playerIdx, rng, { level })   // → { actorId, skillId, why }
+SBWarAI.chooseTarget(options, { level })                // → 组 id：'bodies' | 'standins'
+SBWarAI.chooseCoin(payload, aiPlayerIndex, { level })   // → 硬币对象 | null
 ```
 
-### 7.2 策略摘要
+- `chooseAction` 会多返回一个 `why`（这一手的判断理由），UI 把它显示在 AI 回合面板上，`SBWarUI.getAIReason()` 可以取到。
+- `SBWarAI.HARD_TUNE` 集中了难度 2 的全部可调参数，`scripts/ai-sweep*.cjs` 靠覆盖它做参数扫描。
 
-- 本体 1 血且存在替身 → 替身行动。
-- 濒死优先护盾/韧性；对方本体 1 血 → 普攻补刀。
-- 无替身时优先召唤；之后按概率使用磨刀、护盾、韧性、反甲、小偷、幸运、诅咒、异质、拆分。
-- 普通攻击兜底。
-- 目标：先补 1 血目标，否则打本体。
+### 7.2 先记住这几条规则认知（都用脚本实测过）
+
+| 认知 | 后果 |
+| --- | --- |
+| **普通攻击判定失败只自伤 1 点，技能不会外流**；其他技能失败会把技能**白送给对方**（本体失败→对方本体，替身失败→对方替身；对方技能槽满了才落空） | 技能都是 50% 判定且带"送礼"风险，**普攻是唯一无外流风险的输出**，所以技能默认低分 |
+| 普攻一次覆盖一整组（全体对手本体 / 全体对手替身） | 多人局无法集火，攻击组的价值要按"组内实体数"算 |
+| **自伤会触发自己的反甲，伤害打向对方本体** | 1 血时普攻有 25% 概率直接把自己送走；反甲能让失败的普攻反手打对方 |
+| **磨刀放大的是"下一次伤害"，自伤也算** | 磨刀同时放大自己的风险，别为了磨刀浪费回合 |
+| 幸运币/诅咒币是**覆盖**原结果 | 幸运币把失败救回来（成功率 50%→75%），诅咒币把对方成功压掉（50%→25%）；用在对方**技能**成功上还能把技能抢过来 |
+| 拆分把本体变成多个 1 血阶段，逐阶段判定复活 | 3 血本体拆开后能挨约 7 下（不拆约 6 下），收益有限但能保住效果与技能槽 |
+| **难度 1 优先打替身组** | 替身是天然挡箭牌：替身在场时对手的攻击大多打在替身上 |
+
+### 7.3 难度 1（简单）：随机试探
+
+- 固定优先级 + 概率触发：本体 1 血优先护盾/韧性，任一对手本体 1 血改普攻，没有替身先召唤，其余按概率使用磨刀/护盾/韧性/反甲/小偷/幸运/诅咒/异质/拆分。
+- 目标：优先 1 血实体，其次打替身组。
 - 硬币：自己判定失败用幸运币，对方判定成功用诅咒币；随机偷取不干预。
-- AI 硬币自动处理；人类持币时显示 AI 硬币为“电脑保留”。
+- **难度 1 的行为不得改动**，它是难度 2 的对照组。
 
-### 7.3 调度与并发
+### 7.4 难度 2（进阶）：以输出为主
+
+设计目标：**在运气占比很高的规则下仍能明显更强**。核心是把回合花在能换回伤害的地方。
+
+- **几乎每回合都在普攻**（模拟中约九成）。早期版本 75% 的回合在用技能，伤害/回合只有难度 1 的四成。
+- **只打对方本体组**：本体的生命值才是胜负条件，替身只是附属单位。对方本体带护盾、整组都打不动时才改打替身组。
+- **收割**：对方本体 1 血 → 普攻本体组（50% 直接赢），此时任何防御技能都是负分。
+- **替身当缓冲**：没有替身就先召唤一个。替身顶在前面可以替本体扛自伤（本体 2 血就让替身行动），同时吃掉对手打向替身组的群体攻击。实测这一条把双人局胜率从 50% 拉到 58%。
+- **本体 1 血时不浪费回合**：普攻失败的自伤会直接致命，此时只考虑护盾，其余技能一律扣分。
+- **破盾用异质**：对方有护盾/韧性时，真实伤害能无视它们；护盾会把整次普通攻击吃光。
+- **硬币花在关键判定上**：自己的复活/惩罚判定失败必救；自己技能判定失败也要救（否则技能白送）；对方复活成功或技能成功就用诅咒币压掉（后者等于把技能抢过来）；对方普攻成功只在它剩 1 血时才压。
+- 难度 2 会输出这一手的判断理由（`why`），UI 直接显示给玩家。
+
+### 7.5 怎么验证"真的更强"
+
+不要靠感觉，用对局模拟：
+
+```bash
+node scripts/ai-arena.cjs 400 2      # 双人局胜率（难度 2 先手/后手各 400 局）
+node scripts/ai-arena.cjs 200 3      # 三人局
+node scripts/ai-diagnose.cjs 200 2   # 技能使用、伤害、伤害/回合
+node scripts/ai-sweep.cjs 200 2      # 参数扫描：同一批种子对比方案
+node scripts/probe-mechanics.cjs     # 规则交互探针（反甲/磨刀/硬币/反噬）
+node scripts/probe-hp.cjs            # 有效生命探针（拆分/护盾能挨几下）
+```
+
+- **400 局的噪声约 ±2.4%**，要下"更强"的结论至少跑 400 局，并同时看诊断里的普攻次数与伤害/回合。
+- 扫描脚本共用同一批种子，方案之间可以对比；`HARD_TUNE` 里都是可覆盖的数值。
+- **当前实测**：双人局 **约 65%**（同质基线 50%）、三人局 **约 40%**（基线 33%）、四人局与基线持平。四人局里一次群体攻击同时打中所有对手，本体血量同步下降，胜负基本由运气决定，参数扫描也找不到稳定优势。
+
+### 7.6 调度与并发
 
 - `render()` 末尾 `scheduleAITurn()`；`aiScheduled/aiActing` 防止重复。
 - 延迟 900ms（减少动态效果时 350ms）。
@@ -314,9 +409,13 @@ pnpm test
 
 - `tests/engine.test.cjs`：基础状态、判定、技能、复活、硬币、统计。
 - `tests/engine.edge.test.cjs`：替身、拆分边界、小偷、硬币顺序、自伤、真实伤害等。
-- `tests/ai.test.cjs`：AI 选人/技能/目标/硬币。
+- `tests/multiplayer.test.cjs`：3–4 人的人数/先手、攻击分组与逐个结算、目标组 payload、生命值上限＝人数 + 1、全体承接反噬、替身反噬、槽满跳过、诅咒币覆盖、反甲自伤去向、回合轮转与淘汰、胜负与平局、双人行为回归。
+- `tests/ai.test.cjs`：难度 1 的 AI 选人/技能/目标/硬币。
+- `tests/ai-hard.test.cjs`：难度 2 的策略（收割、替身顶替、破盾异质、硬币时机、难度 1 行为未变），外加两条**统计回归**：普攻+召唤占比 ≥ 80%、磨刀/韧性/小偷/幸运/诅咒/拆分这类"失败就白送对方"的技能占比 ≤ 5%——防止以后把难度 2 改回"乱用技能"。
 - 测试使用注入 `rng`，不要依赖 `Math.random`。
 - 断言日志时用 `game.logs.map(l => l.text).join('\n')`。
+- 新增“对方”相关的规则时，先在 `engine.js` 里找 `othersOf/enemiesOf/backlashReceivers`，不要新增 `1 - index`。
+- **AI 强度的量化不放在单元测试里**（胜率需要几百局才稳定），放在 `scripts/ai-arena.cjs` 里跑，单元测试只锁行为与出手结构。
 
 ### 8.2 UI 冒烟
 
@@ -325,18 +424,23 @@ pnpm test:ui
 ```
 
 - 需要 Chrome/Edge；`CHROME_PATH` 可覆盖。
-- 覆盖：先手动画、普通攻击、技能提示、规则、硬币面板（双方/单方/用尽关闭）、偷取动画、复活硬币、AI 行动、战报、移动端横向溢出。
-- 截图输出到 `.ui-screens/`（gitignore）。
-- 使用 CDP 的 `Runtime.evaluate`；多语句脚本要用 IIFE，避免 `const` 重复声明。
+- 覆盖：先手动画、普通攻击、技能提示、规则、硬币面板（双方/单方/用尽关闭）、偷取动画、复活硬币、AI 行动、难度选择（显隐/切换/持久化/回合面板标注难度并给出判断理由）、战报、移动端横向溢出，以及多人模式（设置页切四人、四面板分列、多人反噬、目标列表覆盖全体对手、多人硬币多人确认、多电脑依次行动、多人战报、四人局移动端不溢出）。
+- 截图输出到 `.ui-screens/`（gitignore）；README 用的截图手动复制到 `docs/`。
+- 使用 CDP 的 `Runtime.evaluate`；多语句脚本要用 IIFE，避免 `const` 重复声明（同一次运行内变量名不能重复）。
 - 当前 headless 环境可能默认 `prefers-reduced-motion: reduce`；UI 对减少动态效果有静态兜底。
+- `index.html?demo=battle` 会直接开一局四人混战（1 号选手对抗三个电脑），适合快速验收。
 
 ### 8.3 调试入口
 
 `window.SBWarUI`：
 
 ```js
-SBWarUI.start(names, { firstPlayer: 0, aiPlayerIndex: null })
+SBWarUI.start(names, { firstPlayer: 0, aiPlayerIndexes: [1, 2] })
 SBWarUI.getGame()
+SBWarUI.getAIPlayers()
+SBWarUI.getDifficulty()      // 1 | 2
+SBWarUI.setDifficulty(2)
+SBWarUI.getAIReason()       // 难度 2 上一手的判断理由
 SBWarUI.render()
 SBWarUI.reset()
 ```
@@ -348,12 +452,23 @@ SBWarUI.reset()
 1. **异步取消**：`startSequence`、`activeRoll`、`pendingCoin`、`aiTimer` 是四套独立取消机制，改动开局/重开逻辑时不要只清其中一套。
 2. **效果提示钩子位置**：`onEffect` 必须放在 `applyEffect` 的尾部，不能放进 `attachEffect`（曾因此出现 `skillId is not defined`）。
 3. **硬币面板**：不要重新引入“硬币用尽后空面板”；引擎在无硬币时不会调用 `chooseCoinIntervention`。
-4. **AI 硬币与人类面板**：AI 硬币由 AI 自动决定，人类面板的 `coinPlayers` 只应包含人类；AI 硬币显示为“电脑保留”。
+4. **AI 硬币与人类面板**：AI 硬币由 AI 自动决定，人类面板的 `humanCoins` 只应包含人类；AI 硬币显示为“电脑保留”。多个电脑时按 `aiPlayers` 顺序取第一个有决策的硬币。
 5. **效果 token 动画**：`changedEffects` 依赖 `prepareEffectChanges` 在 `renderPanels` 前执行；不要在渲染函数内部再次调用 `render()`。
-6. **CSS 动画与减少动态效果**：全局 `prefers-reduced-motion` 会压缩动画；新提示类需要检查静态可见性。
-7. **日志自动滚动**：`renderLog()` 每次都滚到底部，这是产品要求；不要改回“仅在底部时滚动”。
-8. **z-index**：新增全屏 overlay 时确认没有盖住掷币动画/效果提示。
-9. **`color-mix`**：CSS 使用了 `color-mix`，现代 Chrome/Edge/Firefox 支持；若要兼容旧浏览器需补 fallback。
+6. **动画会被重渲染打断**：CSS 动画绑定的是**元素的生命周期**。如果每次 `render()` 都整体重写 `innerHTML`，里面的动画会不断从 0 重播，看起来就像"跟着帧率走"。因此所有渲染都走 `setHTML(node, html)`（内容不变就不写 DOM）；循环动画只挂在**不会被重建**的节点上，例如"行动中"呼吸挂在 `.player-panel.is-active::after`（面板节点稳定），不要挂在会被重建的 `.turn-chip` 上。
+7. **类名会跨区域串扰**：日志条目的类型类名（`class="log-entry slot"`）和面板的技能槽类名（`.slot`）同名。给面板写样式务必限定作用域（`.player-panel .slot`），否则 `width: 24px` 会把整条日志压成竖条。
+8. **CSS 动画与减少动态效果**：全局 `prefers-reduced-motion` 会压缩动画；新提示类需要检查静态可见性。
+9. **日志自动滚动**：`renderLog()` 每次都滚到底部，这是产品要求；不要改回“仅在底部时滚动”。
+10. **z-index**：新增全屏 overlay 时确认没有盖住掷币动画/效果提示。
+11. **`color-mix`**：CSS 使用了 `color-mix`，现代 Chrome/Edge/Firefox 支持；若要兼容旧浏览器需补 fallback。
+12. **人数别写死**：`.board` 仍是三列网格，面板数量靠 `syncPanelNodes` 分配；新增席位相关 UI 时按 `game.players.length` 循环，不要假设只有 2 人。窄屏（≤980px）下 `.board` 变成「两列面板 + 通栏中间栏」，**必须显式写 `grid-row`**：DOM 顺序是左栏→中间栏→右栏，不锁行的话稀疏排布会把右栏挤到战斗记录下面。
+13. **席位默认名**：`normalizeNames`（引擎）和 `startGame`（UI）都会用“玩家N”填补空位，但人数由**输入长度**决定，不要先填默认值再数长度。
+14. **一个 label 只绑定一个控件**：`<label>` 的隐式控件是它内部的**第一个** labelable 元素。如果把名字输入框和“电脑”复选框放进同一个 `<label>`，点“电脑”只会聚焦名字框（曾因此出现“电脑按钮按不动”）。现在席位行是 `<div class="setup-row">`，名字与开关各自用独立的 `<label for>`。
+15. **血量不是常数**：`hp === 3` 这类硬编码断言会随人数变化失败，用 `game.bodyMaxHp()` 或 `game.players.length + 1`。
+16. **图标只在一处渲染**：`⊕`（替身）等装饰性图标统一交给 CSS `::before`；如果 HTML 文案里也写了一遍就会显示两次。
+17. **截图顺序**：`02-effects.png` 必须在状态构造之后、重开对局之前拍，否则截到的是空面板。压测截图 `02b-` 用 `clearEffects` 清干净后再构造。
+18. **AI 的难度开关必须跟着 `level` 传下去**：`chooseAction/chooseTarget/chooseCoin` 都收 `{ level }`，漏传会静默退回难度 1（看起来"AI 变笨了"，但代码没报错）。
+19. **AI 的目标选择拿到的是 `describe()` 后的实体**：只有 `hp / isStandin / alive / slots / effects`，**没有 `shield`、`tenacity` 这些字段**。要看护盾只能查 `entity.effects` 里 `key === 'shield'` 的项（早期版本直接读 `entity.shield`，永远拿到 undefined，导致破盾判断失效）。
+20. **调参别写死常量**：难度 2 的所有权重都在 `HARD_TUNE` 里，用 `scripts/ai-sweep*.cjs` 覆盖后跑同一批种子对比；凭感觉调参很容易把胜率调成噪声。
 
 ## 10. 扩展建议
 
@@ -362,14 +477,22 @@ SBWarUI.reset()
 1. `SKILLS` 增加条目（id、icon、name、desc、short、accent）。
 2. 若是被动/持续效果：在 `applyEffect` 增加 case，并补实体字段/`effectChips`/`clearEffects`。
 3. 若可被偷：补 `stealableEffects`、`removeEffect`、`attachEffect`。
-4. 更新规则手册、README 表格、UI 测试。
-5. 加引擎测试，至少覆盖成功/失败反用/复活清理/小偷交互。
+4. 如果技能描述里出现“对方”，请按 `othersOf/enemiesOf/backlashReceivers` 的多人语义实现，不要用 `1 - index`。
+5. 更新规则手册、README 表格、UI 测试。
+6. 加引擎测试，至少覆盖成功/失败反用/复活清理/小偷交互。
 
 ### 加一个新的界面动画
 
 - 优先用 `io.onEffect`、`io.animateRoll`、`io.pause` 三个钩子，不要在 UI 里解析日志。
 - 动画必须 `pointer-events:none`，不得阻塞行动。
 - 不要给背景加模糊，产品要求观察战局。
+
+### 支持更多人数
+
+1. 抬高 `engine.js` 的 `MAX_PLAYERS`，并在 `index.html` 补一个 `.setup-row`（id 为 `nameN` / `aiN`）。
+2. CSS 增加 `.player-panel.pN` 与 `.report-col.pN` 的配色（现有 p0–p3）。
+3. `syncPanelNodes` 会自动把面板平均分到左右两列，人数更多时建议改成多行网格。
+4. 战报用 `.report-grid.is-battle` 的自适应列宽，人数多时会自动换行。
 
 ### 联机化
 
@@ -381,20 +504,23 @@ SBWarUI.reset()
 ## 11. 当前待办 / 可继续做的方向
 
 - 音效与技能释放演出。
-- AI 难度分级或更长期规划。
+- AI 再加一档"专家"难度：按技能槽规划多回合行动（提前囤幸运币、算准对手磨刀层数），并在四人局里找到超过运气基线的打法。
 - 完整战报导出/分享、回放。
 - 移动端更紧凑的面板（当前可用但信息密度较高）。
 - 联机服务器与断线重连。
 - 速度选项（当前单次判定 + 效果连锁节奏偏慢）。
 - 规则自定义开关（当前歧义约定是写死的）。
+- 人数上限目前是 4 人，可考虑更大规模或分组对抗。
 
 ## 12. 交接检查清单
 
-- [x] `pnpm test` 51 项通过
-- [x] `pnpm test:ui` 通过
+- [x] `pnpm test` 95 项通过
+- [x] `pnpm test:ui` 通过（含难度选择与进阶电脑回合验收）
 - [x] 双人同屏可玩
-- [x] 单人 vs 电脑可玩
+- [x] 单人 vs 电脑可玩（难度 1 / 难度 2 两档）
+- [x] 3–4 人混战可玩（对方＝全体其他玩家，反噬同理）
 - [x] 硬币干预、复活、拆分、小偷、AI、战报均已覆盖
+- [x] 难度 2 的强度有可复现的量化结论（双人局约 65% 胜率，见 §7.5）
 - [x] README 与本交接文档同步
 - [ ] 声音/美术/联机等由后续接手者继续
 

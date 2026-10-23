@@ -236,29 +236,48 @@ input:focus-visible {
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(250px, 0.95fr) minmax(430px, 1.55fr) minmax(250px, 0.95fr);
-  grid-template-areas: "p0 center p1";
   gap: 14px;
   padding: 8px 20px 18px;
 }
 
-.player-panel {
-  grid-area: p0;
+/* 玩家面板按人数分列摆放：左列 / 中间操作区 / 右列，人数增加时在两侧堆叠 */
+.side {
   min-height: 0;
+  display: grid;
+  grid-auto-rows: min-content;
+  align-content: start;
+  gap: 14px;
   overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+
+.center-column {
+  grid-column: 2;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.side-left {
+  grid-column: 1;
+}
+
+.side-right {
+  grid-column: 3;
+}
+
+.player-panel {
+  min-height: 0;
   position: relative;
-  padding: 17px;
+  padding: 11px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background:
     linear-gradient(180deg, rgba(20, 26, 39, 0.92), rgba(11, 15, 23, 0.94));
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.3);
   transition: border-color 220ms ease, box-shadow 220ms ease, transform 220ms ease;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
-}
-
-.player-panel.p1 {
-  grid-area: p1;
 }
 
 .player-panel::before {
@@ -284,6 +303,18 @@ input:focus-visible {
   --accent-rgb: 79, 209, 197;
 }
 
+.player-panel.p2 {
+  --accent: var(--purple);
+  --accent-soft: #d3c1ff;
+  --accent-rgb: 177, 140, 255;
+}
+
+.player-panel.p3 {
+  --accent: var(--gold);
+  --accent-soft: var(--gold-soft);
+  --accent-rgb: 232, 180, 90;
+}
+
 .player-panel.is-active {
   border-color: rgba(var(--accent-rgb), 0.42);
   box-shadow:
@@ -299,35 +330,41 @@ input:focus-visible {
   border-radius: var(--radius);
   pointer-events: none;
   background: radial-gradient(300px 120px at 50% 0%, rgba(var(--accent-rgb), 0.07), transparent 70%);
+  /* 呼吸动画挂在面板节点本身（面板节点不会被重建），
+     挂在 .turn-chip 上会因为每次 render 重建节点而不断从 0 重播。 */
+  animation: chip-breathe 2.4s ease-in-out infinite;
 }
+
+/* 紧凑面板样式：正文区块（替换旧的 panel-head ~ standin-slots） */
 
 .panel-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 16px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .player-identity {
   min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
 }
 
 .player-label {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 4px;
-  font-size: 10px;
-  letter-spacing: 0.2em;
+  flex: 0 0 auto;
+  font-size: 9px;
+  letter-spacing: 0.16em;
   color: var(--muted-2);
   text-transform: uppercase;
 }
 
 .player-name {
   margin: 0;
+  min-width: 0;
   font-family: var(--font-display);
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.02em;
   line-height: 1.2;
@@ -338,7 +375,7 @@ input:focus-visible {
 
 .player-name .dead-tag {
   font-family: var(--font-sans);
-  font-size: 11px;
+  font-size: 10px;
   color: var(--red);
   letter-spacing: 0.1em;
   vertical-align: middle;
@@ -360,53 +397,28 @@ input:focus-visible {
 
 .turn-chip {
   flex: 0 0 auto;
-  padding: 5px 9px;
+  padding: 3px 8px;
   border-radius: 999px;
   border: 1px solid rgba(var(--accent-rgb), 0.4);
   background: rgba(var(--accent-rgb), 0.1);
   color: var(--accent-soft);
-  font-size: 10px;
+  font-size: 9px;
   letter-spacing: 0.12em;
-  animation: chip-breathe 2.4s ease-in-out infinite;
 }
+
+/* 实体块 */
 
 .entity {
   position: relative;
-  border-radius: 14px;
+  border-radius: 10px;
   padding: 2px;
-}
-
-.entity + .standin-card {
-  margin-top: 16px;
 }
 
 .entity.is-actor {
   background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.055), transparent 70%);
 }
 
-.mini-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-  color: var(--muted-2);
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.mini-label em {
-  font-style: normal;
-  color: var(--muted);
-  letter-spacing: 0.03em;
-}
-
 /* HP */
-
-.hp-block {
-  margin-bottom: 16px;
-}
 
 .hp-line {
   display: flex;
@@ -414,26 +426,33 @@ input:focus-visible {
   gap: 4px;
 }
 
+.hp-kind {
+  margin-right: 2px;
+  color: var(--blue);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
 .hp-value {
   font-family: var(--font-display);
-  font-size: 46px;
+  font-size: 30px;
   font-weight: 700;
-  line-height: 0.95;
-  letter-spacing: -0.03em;
+  line-height: 1;
+  letter-spacing: -0.02em;
   color: var(--text);
   transition: color 180ms ease;
 }
 
 .hp-max {
   color: var(--muted-2);
-  font-size: 13px;
+  font-size: 11px;
 }
 
 .hp-caption {
   margin-left: auto;
   color: var(--muted-2);
   font-size: 10px;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.1em;
 }
 
 .hp-caption.phase {
@@ -442,8 +461,8 @@ input:focus-visible {
 
 .hp-pips {
   display: flex;
-  gap: 6px;
-  margin-top: 10px;
+  gap: 5px;
+  margin: 7px 0 4px;
 }
 
 .pip {
@@ -458,13 +477,13 @@ input:focus-visible {
 .pip.on {
   background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.65), var(--accent));
   border-color: transparent;
-  box-shadow: 0 0 12px rgba(var(--accent-rgb), 0.22);
+  box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.22);
 }
 
 .pip.current {
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.7),
-    0 0 14px rgba(var(--accent-rgb), 0.5);
+    0 0 12px rgba(var(--accent-rgb), 0.5);
 }
 
 .entity.is-dead .hp-value {
@@ -475,121 +494,91 @@ input:focus-visible {
   background: var(--muted-2);
 }
 
-/* 技能槽 */
+/* 紧凑信息行：效果 / 技能槽 */
 
-.slots-block {
-  margin-bottom: 15px;
-}
-
-.slots {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.slots.two {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.slot {
-  position: relative;
-  min-height: 46px;
-  padding: 6px 5px;
+.token-row {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  border: 1px dashed rgba(255, 255, 255, 0.09);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.018);
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 22px;
+  margin-top: 9px;
+}
+
+/* 血条 / 效果 / 技能槽 三段之间的呼吸间距 */
+.token-row + .token-row {
+  margin-top: 11px;
+}
+
+.token-label {
+  flex: 0 0 auto;
+  width: 34px;
+  padding-top: 5px;
   color: var(--muted-2);
-  font-size: 9px;
-  text-align: center;
-  transition: 160ms ease;
-}
-
-.slot.empty::before {
-  content: "+";
-  font-size: 14px;
-  color: rgba(255, 255, 255, 0.13);
-}
-
-.slot.filled {
-  border-style: solid;
-  border-color: rgba(var(--accent-rgb), 0.28);
-  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.11), rgba(var(--accent-rgb), 0.035));
-  color: var(--accent-soft);
-}
-
-.slot-ico {
-  font-size: 15px;
-  line-height: 1;
-}
-
-.slot-name {
-  font-size: 9px;
-  line-height: 1.1;
+  font-size: 8.5px;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
 }
 
-/* 效果 */
-
-.effects-block {
-  margin-bottom: 15px;
-}
-
-.effects-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(62px, 1fr));
+.token-content {
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+  flex: 1;
 }
+
+.effects-empty {
+  padding: 4px 0;
+  color: var(--muted-2);
+  font-size: 10px;
+}
+
+/* 效果卡片：图标大、数量受技能槽约束（正文 ≤4、替身 ≤2），一行放得下 */
 
 .effect-token {
   --tone: var(--muted);
   --tone-rgb: 135, 146, 166;
   position: relative;
-  min-height: 58px;
+  width: 56px;
+  min-height: 46px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 3px;
-  padding: 6px 4px;
+  padding: 5px 3px;
   border: 1px solid rgba(var(--tone-rgb), 0.3);
-  border-radius: 10px;
-  background: linear-gradient(180deg, rgba(var(--tone-rgb), 0.14), rgba(var(--tone-rgb), 0.035));
+  border-radius: 9px;
+  background: linear-gradient(180deg, rgba(var(--tone-rgb), 0.15), rgba(var(--tone-rgb), 0.035));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
 }
 
 .effect-icon {
   color: var(--tone);
-  font-size: 24px;
+  font-size: 20px;
   line-height: 1;
-  text-shadow: 0 0 14px rgba(var(--tone-rgb), 0.45);
+  text-shadow: 0 0 12px rgba(var(--tone-rgb), 0.45);
 }
 
 .effect-name {
   color: var(--muted);
-  font-size: 9.5px;
+  font-size: 9px;
   line-height: 1;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   white-space: nowrap;
 }
 
 .effect-value {
   position: absolute;
-  top: 4px;
-  right: 5px;
+  top: 3px;
+  right: 4px;
   padding: 0 4px;
   border: 1px solid rgba(var(--tone-rgb), 0.3);
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.35);
   color: var(--tone);
-  font-size: 9px;
+  font-size: 8.5px;
   font-weight: 700;
   line-height: 1.45;
 }
@@ -614,28 +603,17 @@ input:focus-visible {
   --tone-rgb: 126, 217, 167;
 }
 
-.effect-token[data-effect="tenacity"] .effect-value {
-  padding: 1px 6px;
-  border-color: rgba(126, 217, 167, 0.55);
-  background: rgba(126, 217, 167, 0.16);
-  font-size: 11px;
-  box-shadow: 0 0 10px rgba(126, 217, 167, 0.22);
-}
-
-.effect-token[data-effect="tenacity"] .effect-name {
-  color: var(--green);
-}
-
 .effect-token.tone-red {
   --tone: var(--red-soft);
   --tone-rgb: 255, 95, 109;
 }
 
-.effects-empty {
-  grid-column: 1 / -1;
-  padding: 8px 2px;
-  color: var(--muted-2);
-  font-size: 10.5px;
+.effect-token[data-effect="tenacity"] .effect-value {
+  font-size: 10px;
+}
+
+.effect-token[data-effect="tenacity"] .effect-name {
+  color: var(--green);
 }
 
 .effect-token.effect-pop {
@@ -650,39 +628,56 @@ input:focus-visible {
   }
   42% {
     transform: scale(1.08);
-    box-shadow: 0 0 24px rgba(var(--tone-rgb), 0.45);
+    box-shadow: 0 0 20px rgba(var(--tone-rgb), 0.45);
   }
   100% {
     transform: scale(1);
     filter: brightness(1);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+    box-shadow: none;
   }
 }
 
-.effects-grid.compact {
-  grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
-  gap: 5px;
+/* 技能槽 */
+
+/* 技能槽。注意：必须限定在 .player-panel 下，
+   因为战斗记录里 type='slot' 的条目也会拿到 .slot 类名（class="log-entry slot"）。 */
+.player-panel .slot {
+  position: relative;
+  width: 24px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(255, 255, 255, 0.09);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.018);
+  color: var(--muted-2);
+  transition: 160ms ease;
 }
 
-.effects-grid.compact .effect-token {
-  min-height: 50px;
+.player-panel .slot.empty::before {
+  content: "";
 }
 
-.effects-grid.compact .effect-icon {
-  font-size: 20px;
+.player-panel .slot.filled {
+  border-style: solid;
+  border-color: rgba(var(--accent-rgb), 0.3);
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.13), rgba(var(--accent-rgb), 0.04));
+  color: var(--accent-soft);
 }
 
-.effects-grid.compact .effect-name {
-  font-size: 9px;
+.player-panel .slot-ico {
+  font-size: 13px;
+  line-height: 1;
 }
 
 /* 替身 */
 
 .standin-card {
-  margin-top: 15px;
-  padding: 11px;
+  margin-top: 10px;
+  padding: 8px 9px;
   border: 1px dashed rgba(255, 255, 255, 0.1);
-  border-radius: 13px;
+  border-radius: 10px;
   background: rgba(0, 0, 0, 0.16);
 }
 
@@ -697,72 +692,44 @@ input:focus-visible {
   box-shadow: 0 0 0 1px rgba(111, 183, 255, 0.12);
 }
 
-.standin-head {
+.standin-card.is-empty {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 8px;
+  padding: 6px 9px;
 }
 
 .standin-title {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   color: var(--blue);
   font-size: 11px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
 }
 
+/* 替身图标只在这里出现一次（不要再在文案里额外写 ⊕） */
 .standin-title::before {
   content: "⊕";
   font-size: 12px;
 }
 
-.standin-hp {
-  font-size: 11px;
-  color: var(--blue);
-  letter-spacing: 0.06em;
-}
-
 .standin-none {
   color: var(--muted-2);
-  font-size: 10.5px;
+  font-size: 9.5px;
+  text-align: right;
 }
 
-.standin-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 6px;
+.standin-card.has-standin .hp-line {
+  margin-bottom: 2px;
 }
 
-.standin-slots {
-  margin-top: 8px;
+.standin-card.has-standin .hp-pips {
+  margin: 5px 0 2px;
 }
-
-.standin-slots .slots {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.standin-slots .slot {
-  min-height: 34px;
-}
-
-.standin-slots .slot-name {
-  font-size: 8.5px;
-}
-
 /* 中央栏 */
-
-.center-column {
-  grid-area: center;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
 
 .action-card,
 .log-card {
@@ -1624,6 +1591,7 @@ input:focus-visible {
 
 .coin-confirm-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
 }
@@ -1771,6 +1739,54 @@ input:focus-visible {
 .target-stat {
   color: var(--muted-2);
   font-size: 10px;
+}
+
+/* 目标组卡片（普通攻击：全体对手本体 / 全体对手替身） */
+
+.target-members {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.target-member {
+  display: block;
+  padding: 5px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.target-member-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.target-member .target-orb {
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+}
+
+.target-member-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.target-member .target-stats {
+  margin-top: 3px;
+  gap: 4px;
+}
+
+.target-card.group {
+  align-items: flex-start;
+  gap: 10px;
 }
 
 .target-arrow {
@@ -1998,19 +2014,81 @@ input:focus-visible {
   text-align: left;
 }
 
-.setup-fields label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.setup-block {
+  margin-bottom: 16px;
+  text-align: left;
 }
 
-.setup-fields span {
+.setup-block-label {
+  display: block;
+  margin-bottom: 8px;
   color: var(--muted-2);
   font-size: 10px;
   letter-spacing: 0.14em;
 }
 
-.setup-fields input {
+.setup-hint {
+  margin: 8px 0 0;
+  color: var(--muted-2);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* 电脑难度（只有勾了电脑才显示） */
+.setup-block[hidden] {
+  display: none;
+}
+
+.mode-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.mode-btn {
+  padding: 9px 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: 150ms ease;
+}
+
+.mode-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.mode-btn.active {
+  border-color: rgba(232, 180, 90, 0.4);
+  background: rgba(232, 180, 90, 0.14);
+  color: var(--gold-soft);
+  font-weight: 600;
+}
+
+.mode-btn:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.setup-fields label {
+  cursor: default;
+}
+
+.setup-row-label {
+  color: var(--muted-2);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+}
+
+.setup-fields input[type="text"] {
   width: 100%;
   padding: 11px 12px;
   border: 1px solid var(--line);
@@ -2021,32 +2099,48 @@ input:focus-visible {
   transition: 150ms ease;
 }
 
-.setup-fields input:focus {
+.setup-fields input[type="text"]:focus {
   border-color: rgba(232, 180, 90, 0.45);
   outline: none;
   box-shadow: 0 0 0 3px rgba(232, 180, 90, 0.08);
 }
 
-.ai-toggle {
-  display: flex;
+/* 席位行：名字 + 电脑开关（每个 label 只绑定一个控件） */
+.setup-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "label seat" "input seat";
   align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-  padding: 11px 12px;
+  column-gap: 8px;
+  row-gap: 5px;
+  padding: 9px 10px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.025);
+}
+
+.setup-row.hidden {
+  display: none;
+}
+
+.setup-row-label {
+  grid-area: label;
+}
+
+.setup-row input[type="text"] {
+  grid-area: input;
+}
+
+.setup-seat {
+  grid-area: seat;
+  display: flex;
+  align-items: center;
+  padding: 5px 3px;
   cursor: pointer;
-  text-align: left;
-  transition: 150ms ease;
+  user-select: none;
 }
 
-.ai-toggle:hover {
-  border-color: rgba(232, 180, 90, 0.28);
-  background: rgba(232, 180, 90, 0.045);
-}
-
-.ai-toggle input {
+.setup-seat input {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -2054,61 +2148,32 @@ input:focus-visible {
   pointer-events: none;
 }
 
-.ai-toggle-switch {
-  position: relative;
-  flex: 0 0 auto;
-  width: 38px;
-  height: 22px;
+.setup-seat-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 11px;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.35);
-  transition: 160ms ease;
-}
-
-.ai-toggle-switch::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--muted);
-  transition: 160ms ease;
-}
-
-.ai-toggle input:checked + .ai-toggle-switch {
-  border-color: rgba(232, 180, 90, 0.6);
-  background: rgba(232, 180, 90, 0.28);
-}
-
-.ai-toggle input:checked + .ai-toggle-switch::after {
-  transform: translateX(16px);
-  background: var(--gold-soft);
-  box-shadow: 0 0 10px rgba(232, 180, 90, 0.45);
-}
-
-.ai-toggle input:focus-visible + .ai-toggle-switch {
-  outline: 2px solid var(--gold);
-  outline-offset: 2px;
-}
-
-.ai-toggle-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.ai-toggle-copy strong {
-  font-size: 11.5px;
-  color: var(--text);
-  font-weight: 600;
-}
-
-.ai-toggle-copy small {
   color: var(--muted-2);
   font-size: 10px;
-  line-height: 1.35;
+  letter-spacing: 0.08em;
+  transition: 150ms ease;
+}
+
+.setup-seat:hover .setup-seat-tag {
+  border-color: rgba(232, 180, 90, 0.35);
+  color: var(--text);
+}
+
+.setup-seat input:checked + .setup-seat-tag {
+  border-color: rgba(232, 180, 90, 0.55);
+  background: rgba(232, 180, 90, 0.16);
+  color: var(--gold-soft);
+}
+
+.setup-seat input:focus-visible + .setup-seat-tag {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
 }
 
 .setup-foot {
@@ -2123,6 +2188,11 @@ input:focus-visible {
 .victory-modal {
   width: min(94vw, 780px);
   text-align: center;
+}
+
+/* 多人战报列数更多，需要更宽的弹窗，否则“造成伤害 12”这类会错误换行 */
+.victory-modal.is-battle {
+  width: min(96vw, 1120px);
 }
 
 .victory-report {
@@ -2159,6 +2229,11 @@ input:focus-visible {
   gap: 9px;
 }
 
+/* 3–4 人战报排成更紧凑的两列 */
+.report-grid.is-battle {
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+}
+
 .report-col {
   border: 1px solid var(--line);
   border-radius: 11px;
@@ -2172,6 +2247,14 @@ input:focus-visible {
 
 .report-col.p1 {
   border-color: rgba(79, 209, 197, 0.24);
+}
+
+.report-col.p2 {
+  border-color: rgba(177, 140, 255, 0.24);
+}
+
+.report-col.p3 {
+  border-color: rgba(232, 180, 90, 0.24);
 }
 
 .report-col-head {
@@ -2201,6 +2284,14 @@ input:focus-visible {
 
 .report-col.p1 .report-col-head em {
   color: var(--cyan-soft);
+}
+
+.report-col.p2 .report-col-head em {
+  color: #d3c1ff;
+}
+
+.report-col.p3 .report-col-head em {
+  color: var(--gold-soft);
 }
 
 .report-stats {
@@ -2641,18 +2732,33 @@ input:focus-visible {
   .board {
     flex: none;
     grid-template-columns: 1fr 1fr;
-    grid-template-areas:
-      "p0 p1"
-      "center center";
     padding: 6px 14px 24px;
+  }
+
+  .side {
+    overflow: visible;
+  }
+
+  /* 显式指定行：DOM 顺序是 左栏 → 中间栏 → 右栏，
+     不写 grid-row 的话稀疏排布会把右栏挤到中间栏（日志）下面。 */
+  .side-left {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .side-right {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .center-column {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-height: 620px;
   }
 
   .player-panel {
     max-height: none;
-  }
-
-  .center-column {
-    min-height: 620px;
   }
 
   .log-card {
@@ -2684,9 +2790,6 @@ input:focus-visible {
 
   .board {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-areas:
-      "p0 p1"
-      "center center";
     padding: 4px 10px 20px;
   }
 
@@ -2699,13 +2802,20 @@ input:focus-visible {
     margin-bottom: 12px;
   }
 
+  /* 面板很窄时把 PLAYER 标签和玩家名拆成两行，名字才不会被截成“玩…” */
+  .player-identity {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+  }
+
   .player-label {
     font-size: 8px;
     letter-spacing: 0.12em;
   }
 
   .player-name {
-    font-size: 18px;
+    font-size: 16px;
   }
 
   .turn-chip {
@@ -2714,49 +2824,44 @@ input:focus-visible {
     letter-spacing: 0.06em;
   }
 
-  .hp-block {
-    margin-bottom: 13px;
-  }
-
   .hp-value {
-    font-size: 38px;
+    font-size: 24px;
   }
 
   .hp-caption {
     display: none;
   }
 
-  .slots {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .token-row {
+    gap: 6px;
   }
 
-  .slot {
-    min-height: 38px;
-  }
-
-  .slot-name {
+  .token-label {
+    width: 30px;
     font-size: 8px;
   }
 
-  .standin-card {
-    margin-top: 11px;
-    padding: 8px;
-  }
-
-  .effects-grid {
-    grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
-  }
-
   .effect-token {
-    min-height: 52px;
+    width: 50px;
+    min-height: 42px;
   }
 
   .effect-icon {
-    font-size: 21px;
+    font-size: 18px;
   }
 
   .effect-name {
-    font-size: 9px;
+    font-size: 8.5px;
+  }
+
+  .player-panel .slot {
+    width: 22px;
+    height: 20px;
+  }
+
+  .standin-card {
+    margin-top: 8px;
+    padding: 7px 8px;
   }
 
   .overlay.coin-overlay,

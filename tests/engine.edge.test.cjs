@@ -13,7 +13,7 @@ function makeGame(options = {}) {
     io: Object.assign(
       {
         chooseCoinIntervention: async () => ({ done: true }),
-        chooseTarget: async ({ candidates }) => candidates[0].id
+        chooseTarget: async ({ options }) => options[0].id
       },
       io
     )
@@ -353,9 +353,9 @@ test('替身独立复活失败后被移除，本体继续游戏', async () => {
   const game = makeGame({
     values: [0.9, 0.9, 0.1],
     io: {
-      chooseTarget: async ({ candidates }) => {
-        const standin = candidates.find((c) => c.isStandin);
-        return standin ? standin.id : candidates[0].id;
+      chooseTarget: async ({ options }) => {
+        const standins = options.find((option) => option.kind === 'standin');
+        return standins ? standins.id : options[0].id;
       }
     }
   });

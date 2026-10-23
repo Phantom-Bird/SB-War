@@ -52,22 +52,16 @@ test('AI 会尽早召唤替身', () => {
   assert.deepEqual(action, { actorId: 'p0', skillId: 9 });
 });
 
-test('AI 目标选择：优先补刀 1 血目标，否则打本体', () => {
-  assert.equal(
-    AI.chooseTarget([
-      { id: 'body', isStandin: false, hp: 1 },
-      { id: 'standin', isStandin: true, hp: 1 }
-    ]),
-    'body'
-  );
+test('AI 目标组选择：优先集火 1 血本体，否则清掉所有替身', () => {
+  const bodies = { id: 'bodies', kind: 'body', entities: [{ id: 'body', hp: 1 }] };
+  const standins = { id: 'standins', kind: 'standin', entities: [{ id: 'standin', hp: 1 }] };
 
-  assert.equal(
-    AI.chooseTarget([
-      { id: 'body', isStandin: false, hp: 3 },
-      { id: 'standin', isStandin: true, hp: 1 }
-    ]),
-    'standin'
-  );
+  assert.equal(AI.chooseTarget([bodies, standins]), 'bodies');
+
+  bodies.entities[0].hp = 3;
+  assert.equal(AI.chooseTarget([bodies, standins]), 'standins');
+  assert.equal(AI.chooseTarget([bodies]), 'bodies');
+  assert.equal(AI.chooseTarget(null), null);
 });
 
 test('AI 硬币策略：自己失败用幸运币，对方成功用诅咒币', () => {

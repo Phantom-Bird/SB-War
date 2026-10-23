@@ -23,7 +23,7 @@ function makeGame(options = {}) {
     io: Object.assign(
       {
         chooseCoinIntervention: async () => ({ done: true }),
-        chooseTarget: async ({ candidates }) => candidates[0].id
+        chooseTarget: async ({ options }) => options[0].id
       },
       io
     )
@@ -341,9 +341,9 @@ test('召唤替身：替身独立拥有 1 HP 与 2 个技能槽，并可被攻�
   const game = makeGame({
     values: [0.9, 0.9, 0.9, 0.1],
     io: {
-      chooseTarget: async ({ candidates }) => {
-        const standin = candidates.find((c) => c.isStandin);
-        return standin ? standin.id : candidates[0].id;
+      chooseTarget: async ({ options }) => {
+        const standins = options.find((option) => option.kind === 'standin');
+        return standins ? standins.id : options[0].id;
       }
     }
   });
