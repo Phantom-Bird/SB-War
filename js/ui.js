@@ -269,6 +269,15 @@
     `;
   }
 
+  /** 对局内的托管开关：点一下就能切换该席位的硬币托管 */
+  function escrowToggleHTML(index, on, disabled) {
+    const title = on
+      ? '托管中：幸运币/诅咒币由规则自动决定（点击关闭托管）'
+      : '点击开启托管：幸运币/诅咒币由规则自动决定，不再手动确认';
+    return `<button class="escrow-toggle ${on ? 'is-on' : ''}" type="button" data-escrow="${index}"
+      aria-pressed="${on ? 'true' : 'false'}" title="${title}" ${disabled ? 'disabled' : ''}>托管</button>`;
+  }
+
   function panelHTML(player, index) {
     const isCurrent = game.current === index && !game.over;
     const body = player.body;
@@ -282,7 +291,10 @@
           <div class="player-label">${playerTag(index)}</div>
           <h2 class="player-name">${esc(player.name)}${tags.join('')}</h2>
         </div>
-        ${isCurrent ? '<span class="turn-chip">行动中</span>' : ''}
+        <div class="panel-tools">
+          ${escrowToggleHTML(index, Boolean(player.escrow), game.over)}
+          ${isCurrent ? '<span class="turn-chip">行动中</span>' : ''}
+        </div>
       </div>
       ${entityHTML(body, { active: bodyActive })}
       ${standinHTML(player.standin, isCurrent)}
@@ -968,15 +980,15 @@
     }
     aiPlayers = nextAI;
 
-    // 硬币托管：只对人类席位开放（电脑自带硬币策略，比托管规则更聪明）
+    // 硬币托管：每个席位都能开（对局内也能随时切换）
     const nextEscrow = new Set();
     if (Array.isArray(options.escrowCoins)) {
       options.escrowCoins.forEach((index) => {
-        if (Number.isInteger(index) && index >= 0 && index < seatCount && !nextAI.has(index)) nextEscrow.add(index);
+        if (Number.isInteger(index) && index >= 0 && index < seatCount) nextEscrow.add(index);
       });
     } else {
       seats.forEach((seat) => {
-        if (seat.index < seatCount && seat.escrow && seat.escrow.checked && !nextAI.has(seat.index)) {
+        if (seat.index < seatCount && seat.escrow && seat.escrow.checked) {
           nextEscrow.add(seat.index);
         }
       });
@@ -1081,7 +1093,6 @@
       seat.ai.checked = aiPlayers.has(seat.index);
       seat.escrow.checked = escrowPlayers.has(seat.index);
     });
-    syncEscrowAvailability();
     render();
     window.setTimeout(() => seats[0].name.focus({ preventScroll: true }), 60);
   }
@@ -1378,21 +1389,9 @@
       const seat = seats[index];
       names.push(seat.name.value.trim() || seatLabel(index));
       if (seat.ai.checked) aiPlayerIndexes.push(index);
-      else if (seat.escrow && seat.escrow.checked) escrowCoins.push(index);
+      if (seat.escrow && seat.escrow.checked) escrowCoins.push(index);
     }
     return { names, aiPlayerIndexes, escrowCoins };
-  }
-
-  /** 电脑席位不能托管：AI 自带的硬币策略比托管规则更聪明 */
-  function syncEscrowAvailability() {
-    seats.forEach((seat) => {
-      if (!seat.escrow) return;
-      const aiSeat = Boolean(seat.ai && seat.ai.checked);
-      seat.escrow.disabled = aiSeat;
-      const label = seat.escrow.closest('.setup-seat');
-      if (label) label.classList.toggle('disabled', aiSeat);
-      if (aiSeat) seat.escrow.checked = false;
-    });
   }
 
   /** 至少勾了一个电脑时才显示难度选择 */
@@ -1443,7 +1442,17 @@
           seat.name.value = seatLabel(seat.index);
         }
         syncDifficultyVisibility();
-        syncEscrowAvailability();
+      });
+    });
+
+    // 对局内的托管开关：面板头部点一下就切，随时可用
+    [el.sideLeft, el.sideRight].forEach((side) => {
+      side.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-escrow]');
+        if (!button || !game || game.over) return;
+        const index = Number(button.getAttribute('data-escrow'));
+        if (!Number.isInteger(index) || !game.players[index]) return;
+        game.setCoinEscrow(index, !game.isEscrowed(index));
       });
     });
 
@@ -1545,7 +1554,6 @@
     seats.forEach((seat) => {
       seat.name.value = savedNames[seat.index] || seatLabel(seat.index);
     });
-    syncEscrowAvailability();
 
     let storedLevel = DEFAULT_DIFFICULTY;
     try {

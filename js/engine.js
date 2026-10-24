@@ -956,11 +956,12 @@
       return Boolean(player && player.escrow);
     }
 
-    /** 运行中开关某位玩家的硬币托管 */
+    /** 运行中开关某位玩家的硬币托管（对局内的按钮就调它） */
     setCoinEscrow(playerIdx, on) {
       const player = this.players[playerIdx];
       if (!player) return false;
       player.escrow = !!on;
+      this.log(`${player.name} ${player.escrow ? '开启' : '关闭'}硬币托管`, 'system');
       this.emitChanged();
       return player.escrow;
     }

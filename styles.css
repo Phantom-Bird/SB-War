@@ -406,6 +406,49 @@ input:focus-visible {
   letter-spacing: 0.12em;
 }
 
+/* 面板头右侧：托管开关 + 行动中标签 */
+.panel-tools {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 对局内的托管开关：点一下就切 */
+.escrow-toggle {
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-2);
+  font-family: var(--font-sans);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  transition: 150ms ease;
+}
+
+.escrow-toggle:hover {
+  border-color: rgba(232, 180, 90, 0.35);
+  color: var(--text);
+}
+
+.escrow-toggle.is-on {
+  border-color: rgba(232, 180, 90, 0.55);
+  background: rgba(232, 180, 90, 0.16);
+  color: var(--gold-soft);
+}
+
+.escrow-toggle:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.escrow-toggle:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
 /* 实体块 */
 
 .entity {
@@ -2213,23 +2256,6 @@ input:focus-visible {
 .setup-seat input:focus-visible + .setup-seat-tag {
   outline: 2px solid var(--gold);
   outline-offset: 2px;
-}
-
-/* 电脑席位的硬币托管不可用：AI 自带硬币策略，比托管规则更聪明 */
-.setup-seat.disabled {
-  cursor: not-allowed;
-  opacity: 0.4;
-}
-
-.setup-seat.disabled:hover .setup-seat-tag {
-  border-color: var(--line-strong);
-  color: var(--muted-2);
-}
-
-.setup-seat.disabled input:checked + .setup-seat-tag {
-  border-color: var(--line-strong);
-  background: transparent;
-  color: var(--muted-2);
 }
 
 .setup-foot {

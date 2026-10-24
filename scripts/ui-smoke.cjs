@@ -231,29 +231,28 @@ async function main() {
       '取消电脑后应重新隐藏难度选择'
     );
 
-    // 0.7 硬币托管：可选开关（默认关闭），电脑席位不可托管
+    // 0.7 硬币托管：可选开关（默认关闭），任何席位都能勾选
     const escrowUi = await evaluate(`(() => {
       const escrow0 = document.getElementById('escrow0');
       const escrow2 = document.getElementById('escrow2');
       const before = escrow0.checked;
       document.querySelector('.setup-row[data-row="0"] .setup-seat[for="escrow0"]').click();
       const after = escrow0.checked;
-      // 电脑席位：托管开关应被禁用并自动取消
+      // 电脑席位同样可以托管
       document.querySelector('.setup-row[data-row="2"] .setup-seat[for="ai2"]').click();
       const aiDisabled = escrow2.disabled;
-      const aiDimmed = document
-        .querySelector('.setup-row[data-row="2"] .setup-seat[for="escrow2"]')
-        .classList.contains('disabled');
+      document.querySelector('.setup-row[data-row="2"] .setup-seat[for="escrow2"]').click();
+      const aiCanEscrow = escrow2.checked;
       document.querySelector('.setup-row[data-row="2"] .setup-seat[for="escrow2"]').click();
       const aiStillOff = !escrow2.checked;
       document.querySelector('.setup-row[data-row="2"] .setup-seat[for="ai2"]').click();
-      return { before, after, aiDisabled, aiDimmed, aiStillOff };
+      return { before, after, aiDisabled, aiCanEscrow, aiStillOff };
     })()`);
     assert(escrowUi.before === false, '托管默认关闭');
     assert(escrowUi.after === true, '点击“托管”应能切换托管开关');
-    assert(escrowUi.aiDisabled === true, '电脑席位的托管开关应被禁用');
-    assert(escrowUi.aiDimmed === true, '电脑席位的托管开关应有禁用样式');
-    assert(escrowUi.aiStillOff === true, '电脑席位不应能勾选托管');
+    assert(escrowUi.aiDisabled === false, '电脑席位的托管开关不应被禁用');
+    assert(escrowUi.aiCanEscrow === true, '电脑席位也应能勾选托管');
+    assert(escrowUi.aiStillOff === true, '再次点击应能取消托管');
     await screenshot('00c-setup-escrow.png');
 
     // 0.8 托管要真的传进引擎，并写进本地存储
@@ -316,6 +315,32 @@ async function main() {
     assert(escrowPanel.hint.includes('托管'), '面板提示应说明托管由规则自动决定');
     await screenshot('00d-coin-escrow.png');
     await evaluate("document.getElementById('coinConfirm0').click(); true");
+
+    // 0.11 对局内的托管开关：面板头部点一下就切，随时可用
+    const escrowToggle = await evaluate(`(() => {
+      window.SBWarUI.start(['甲', '乙'], { firstPlayer: 0, escrowCoins: [] });
+      const g = window.SBWarUI.getGame();
+      const exists = Boolean(document.querySelector('#panel0 [data-escrow]'));
+      const before = g.isEscrowed(0);
+      document.querySelector('#panel0 [data-escrow]').click();
+      const after = g.isEscrowed(0);
+      const button = document.querySelector('#panel0 [data-escrow]');
+      const pressed = button.getAttribute('aria-pressed');
+      const on = button.classList.contains('is-on');
+      const logged = g.logs.some((entry) => /开启硬币托管/.test(entry.text));
+      button.click();
+      return { exists, before, after, pressed, on, logged, back: g.isEscrowed(0) };
+    })()`);
+    assert(escrowToggle.exists, '面板头部应有托管开关');
+    assert(escrowToggle.before === false, '开局默认不托管');
+    assert(escrowToggle.after === true, '点一下应能开启托管');
+    assert(escrowToggle.pressed === 'true', '开关状态应同步到 aria-pressed');
+    assert(escrowToggle.on === true, '开启后按钮应高亮');
+    assert(escrowToggle.logged === true, '开关动作应记入战斗记录');
+    assert(escrowToggle.back === false, '再点一下应能关闭托管');
+    // 留一张开启状态的截图
+    await evaluate("document.querySelector('#panel0 [data-escrow]').click(); true");
+    await screenshot('00e-escrow-toggle.png');
 
     // 托管是可选功能：验收完把开关和存档都还原，避免影响后面的场景
     await evaluate(`(() => {

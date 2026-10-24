@@ -184,6 +184,19 @@ test('运行中可以把某个玩家切到托管', async () => {
   assert.equal(calls.length, 0, '切到托管后不再弹面板');
 });
 
+test('托管可以随时开关：运行中切换会记入战斗记录', async () => {
+  const { game } = makeGame({ values: [0.1, 0.9] });
+  body(game, 0).lucky = 1;
+
+  assert.equal(game.setCoinEscrow(0, true), true, '应能开启托管');
+  assert.equal(game.isEscrowed(0), true);
+  assert.match(logs(game), /甲 开启硬币托管/);
+
+  assert.equal(game.setCoinEscrow(0, false), false, '应能关闭托管');
+  assert.equal(game.isEscrowed(0), false);
+  assert.match(logs(game), /甲 关闭硬币托管/);
+});
+
 test('托管只影响自己持有的硬币：别人的硬币不受牵连', async () => {
   const { game, calls } = makeGame({ values: [0.1, 0.9], escrowCoins: [0] });
   body(game, 0).lucky = 1; // 托管玩家的幸运币
