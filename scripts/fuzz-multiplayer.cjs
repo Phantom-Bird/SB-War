@@ -79,8 +79,10 @@ function check(cond, message, game) {
 
       // —— 不变量 ——
       const aliveBodies = game.players.filter((p) => p.body.alive).length;
+      // 和局时会有多个本体同时存活（在场玩家并列第一），只有分出胜负才允许只剩一个
+      const isDraw = game.over && game.winner === null;
       check(
-        !game.over || aliveBodies <= 1,
+        !game.over || aliveBodies <= 1 || isDraw,
         `游戏已结束但仍有 ${aliveBodies} 个本体存活`,
         game
       );
@@ -89,6 +91,20 @@ function check(cond, message, game) {
         `胜者的本体并不存活`,
         game
       );
+      if (isDraw) {
+        check(
+          ['all-dead', 'turn-limit', 'pass-streak'].includes(game.drawReason),
+          `和局缺少原因标记（drawReason=${game.drawReason}）`,
+          game
+        );
+        const ranking = game.finalRanking ? game.finalRanking() : [];
+        const aliveRanking = ranking.filter((row) => row.alive);
+        check(
+          aliveRanking.every((row) => row.rank === 1),
+          `和局时在场玩家应并列第一（实际 ${ranking.map((row) => `${row.name}:${row.rank}`).join(' ')}）`,
+          game
+        );
+      }
       if (!game.over) {
         check(game.players[game.current].body.alive, `当前行动者 ${game.current} 的本体已死`, game);
       }

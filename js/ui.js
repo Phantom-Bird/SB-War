@@ -69,7 +69,8 @@
     index,
     row: document.querySelector(`.setup-row[data-row="${index}"]`),
     name: $(`name${index}`),
-    ai: $(`ai${index}`)
+    ai: $(`ai${index}`),
+    escrow: $(`escrow${index}`)
   }));
   // 硬币确认按钮：coinConfirm0..3（多人时全部参与确认）
   const coinConfirms = Array.from({ length: MAX_PLAYERS }, (_, index) => $(`coinConfirm${index}`));
@@ -83,6 +84,8 @@
   let victoryShown = false;
   let startSequence = 0;
   let aiPlayers = new Set();
+  /** 开启硬币托管的玩家（幸运币/诅咒币由规则自动决定） */
+  let escrowPlayers = new Set();
   let aiTimer = null;
   let aiScheduled = false;
   let aiActing = false;
@@ -747,6 +750,27 @@
         })
         .join('');
 
+      // 托管的硬币照常展示，但由规则自动决定，玩家不需要点
+      const escrowCoins = Array.isArray(payload.escrowed) ? payload.escrowed : [];
+      if (escrowCoins.length) {
+        el.coinList.insertAdjacentHTML(
+          'beforeend',
+          escrowCoins
+            .map((coin) => {
+              const lucky = coin.coin === 'lucky';
+              return `<button class="coin-card ${lucky ? 'lucky' : 'curse'} escrow-reserved" type="button" disabled>
+                <span class="coin-card-icon">${lucky ? '☆' : '⇌'}</span>
+                <span class="coin-card-copy">
+                  <strong>${lucky ? '幸运币' : '诅咒币'}</strong>
+                  <small>${esc(coin.holder.name)} · 托管自动决定</small>
+                </span>
+                <span class="coin-card-use">托管</span>
+              </button>`;
+            })
+            .join('')
+        );
+      }
+
       const confirmed = new Map();
       coinConfirms.forEach((button, index) => {
         const required = coinPlayers.has(index);
@@ -802,9 +826,12 @@
       };
 
       const aiNote = hasAI() ? ' 电脑的硬币由 AI 自动处理。' : '';
+      const escrowNote = escrowCoins.length
+        ? ` ${escrowCoins.map((coin) => coin.holder.name).join('、')} 的硬币已托管，由规则自动决定。`
+        : '';
       el.coinHint.textContent = (revive
         ? '持有可用硬币的玩家确认后，本次复活判定以最后一次掷出的结果为准。'
-        : '持有可用硬币的玩家确认后，本次随机数以最后一次掷出的结果为准。') + aiNote;
+        : '持有可用硬币的玩家确认后，本次随机数以最后一次掷出的结果为准。') + aiNote + escrowNote;
 
       showOverlay(el.coinOverlay);
       const firstCard = el.coinList.querySelector('.coin-card');
@@ -941,6 +968,21 @@
     }
     aiPlayers = nextAI;
 
+    // 硬币托管：只对人类席位开放（电脑自带硬币策略，比托管规则更聪明）
+    const nextEscrow = new Set();
+    if (Array.isArray(options.escrowCoins)) {
+      options.escrowCoins.forEach((index) => {
+        if (Number.isInteger(index) && index >= 0 && index < seatCount && !nextAI.has(index)) nextEscrow.add(index);
+      });
+    } else {
+      seats.forEach((seat) => {
+        if (seat.index < seatCount && seat.escrow && seat.escrow.checked && !nextAI.has(seat.index)) {
+          nextEscrow.add(seat.index);
+        }
+      });
+    }
+    escrowPlayers = nextEscrow;
+
     // 难度：优先用调用方传入的，其次读设置界面
     if (options.difficulty !== undefined && options.difficulty !== null) {
       aiLevel = Number(options.difficulty) === DIFFICULTY.HARD ? DIFFICULTY.HARD : DIFFICULTY.EASY;
@@ -950,6 +992,7 @@
     try {
       window.localStorage.setItem('sbwar.names', JSON.stringify(savedNames));
       window.localStorage.setItem('sbwar.seats', JSON.stringify(Array.from(aiPlayers)));
+      window.localStorage.setItem('sbwar.escrow', JSON.stringify(Array.from(escrowPlayers)));
     } catch (error) {
       /* 忽略隐私模式下的存储错误 */
     }
@@ -1007,7 +1050,7 @@
     lastRenderedLogId = 0;
     selectedActor = null;
 
-    instance.start(savedNames, { firstPlayer });
+    instance.start(savedNames, { firstPlayer, escrowCoins: Array.from(escrowPlayers) });
     selectedActor = defaultActorId(instance.current);
     render();
   }
@@ -1036,7 +1079,9 @@
     seats.forEach((seat) => {
       seat.name.value = savedNames[seat.index] || seatLabel(seat.index);
       seat.ai.checked = aiPlayers.has(seat.index);
+      seat.escrow.checked = escrowPlayers.has(seat.index);
     });
+    syncEscrowAvailability();
     render();
     window.setTimeout(() => seats[0].name.focus({ preventScroll: true }), 60);
   }
@@ -1328,12 +1373,26 @@
   function currentSeatConfig() {
     const names = [];
     const aiPlayerIndexes = [];
+    const escrowCoins = [];
     for (let index = 0; index < seatCount; index += 1) {
       const seat = seats[index];
       names.push(seat.name.value.trim() || seatLabel(index));
       if (seat.ai.checked) aiPlayerIndexes.push(index);
+      else if (seat.escrow && seat.escrow.checked) escrowCoins.push(index);
     }
-    return { names, aiPlayerIndexes };
+    return { names, aiPlayerIndexes, escrowCoins };
+  }
+
+  /** 电脑席位不能托管：AI 自带的硬币策略比托管规则更聪明 */
+  function syncEscrowAvailability() {
+    seats.forEach((seat) => {
+      if (!seat.escrow) return;
+      const aiSeat = Boolean(seat.ai && seat.ai.checked);
+      seat.escrow.disabled = aiSeat;
+      const label = seat.escrow.closest('.setup-seat');
+      if (label) label.classList.toggle('disabled', aiSeat);
+      if (aiSeat) seat.escrow.checked = false;
+    });
   }
 
   /** 至少勾了一个电脑时才显示难度选择 */
@@ -1365,8 +1424,8 @@
 
   function bindEvents() {
     el.startBtn.addEventListener('click', () => {
-      const { names, aiPlayerIndexes } = currentSeatConfig();
-      startGame(names, { aiPlayerIndexes, difficulty: aiLevel });
+      const { names, aiPlayerIndexes, escrowCoins } = currentSeatConfig();
+      startGame(names, { aiPlayerIndexes, escrowCoins, difficulty: aiLevel });
     });
 
     seats.forEach((seat) => {
@@ -1384,6 +1443,7 @@
           seat.name.value = seatLabel(seat.index);
         }
         syncDifficultyVisibility();
+        syncEscrowAvailability();
       });
     });
 
@@ -1420,7 +1480,11 @@
     });
 
     el.againBtn.addEventListener('click', () =>
-    startGame(savedNames, { aiPlayerIndexes: Array.from(aiPlayers), difficulty: aiLevel })
+    startGame(savedNames, {
+      aiPlayerIndexes: Array.from(aiPlayers),
+      escrowCoins: Array.from(escrowPlayers),
+      difficulty: aiLevel
+    })
   );
     el.victorySetupBtn.addEventListener('click', resetToSetup);
 
@@ -1465,6 +1529,12 @@
           if (seats[index] && seats[index].ai) seats[index].ai.checked = true;
         });
       }
+      const escrowStored = JSON.parse(window.localStorage.getItem('sbwar.escrow') || 'null');
+      if (Array.isArray(escrowStored)) {
+        escrowStored.forEach((index) => {
+          if (seats[index] && seats[index].escrow) seats[index].escrow.checked = true;
+        });
+      }
     } catch (error) {
       /* 忽略读取失败 */
     }
@@ -1475,6 +1545,7 @@
     seats.forEach((seat) => {
       seat.name.value = savedNames[seat.index] || seatLabel(seat.index);
     });
+    syncEscrowAvailability();
 
     let storedLevel = DEFAULT_DIFFICULTY;
     try {
@@ -1499,6 +1570,8 @@
       render,
       reset: resetToSetup,
       getAIPlayers: () => Array.from(aiPlayers),
+      /** 开启硬币托管的玩家席位（用于展示与测试） */
+      getEscrowPlayers: () => Array.from(escrowPlayers),
       getDifficulty: () => aiLevel,
       /** 难度 2 上一手的判断理由（用于展示与测试） */
       getAIReason: () => aiReason,

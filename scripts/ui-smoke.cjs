@@ -196,9 +196,9 @@ async function main() {
     // 0.5 点击“电脑”标签应能切换该席位的 AI 开关（曾因 label 套多个控件而失效）
     const aiToggleResult = await evaluate(`(() => {
       const before = document.getElementById('ai1').checked;
-      document.querySelector('.setup-row[data-row="1"] .setup-seat').click();
+      document.querySelector('.setup-row[data-row="1"] .setup-seat[for="ai1"]').click();
       const after = document.getElementById('ai1').checked;
-      document.querySelector('.setup-row[data-row="1"] .setup-seat').click();
+      document.querySelector('.setup-row[data-row="1"] .setup-seat[for="ai1"]').click();
       return { before, after, restored: document.getElementById('ai1').checked };
     })()`);
     assert(aiToggleResult.after === !aiToggleResult.before, `点击“电脑”应能切换 AI 开关：${JSON.stringify(aiToggleResult)}`);
@@ -207,7 +207,7 @@ async function main() {
     // 0.6 难度选择：没有电脑时隐藏，勾选电脑后出现，切换后写进 localStorage
     const difficultyHidden = await evaluate("document.getElementById('difficultyBlock').hidden");
     assert(difficultyHidden === true, '没有电脑时不应显示难度选择');
-    await evaluate("document.querySelector('.setup-row[data-row=\"1\"] .setup-seat').click(); true");
+    await evaluate("document.querySelector('.setup-row[data-row=\"1\"] .setup-seat[for=\"ai1\"]').click(); true");
     await sleep(120);
     const difficultyVisible = await evaluate("!document.getElementById('difficultyBlock').hidden");
     assert(difficultyVisible, '勾选电脑后应显示难度选择');
@@ -224,12 +224,108 @@ async function main() {
     assert(difficultyState.active === '2', '难度按钮应高亮');
     assert(difficultyState.hint.includes('普攻'), '难度说明应描述进阶电脑的打法');
     await screenshot('00b-setup-difficulty.png');
-    await evaluate("document.querySelector('.setup-row[data-row=\"1\"] .setup-seat').click(); true");
+    await evaluate("document.querySelector('.setup-row[data-row=\"1\"] .setup-seat[for=\"ai1\"]').click(); true");
     await sleep(120);
     assert(
       (await evaluate("document.getElementById('difficultyBlock').hidden")) === true,
       '取消电脑后应重新隐藏难度选择'
     );
+
+    // 0.7 硬币托管：可选开关（默认关闭），电脑席位不可托管
+    const escrowUi = await evaluate(`(() => {
+      const escrow0 = document.getElementById('escrow0');
+      const escrow2 = document.getElementById('escrow2');
+      const before = escrow0.checked;
+      document.querySelector('.setup-row[data-row="0"] .setup-seat[for="escrow0"]').click();
+      const after = escrow0.checked;
+      // 电脑席位：托管开关应被禁用并自动取消
+      document.querySelector('.setup-row[data-row="2"] .setup-seat[for="ai2"]').click();
+      const aiDisabled = escrow2.disabled;
+      const aiDimmed = document
+        .querySelector('.setup-row[data-row="2"] .setup-seat[for="escrow2"]')
+        .classList.contains('disabled');
+      document.querySelector('.setup-row[data-row="2"] .setup-seat[for="escrow2"]').click();
+      const aiStillOff = !escrow2.checked;
+      document.querySelector('.setup-row[data-row="2"] .setup-seat[for="ai2"]').click();
+      return { before, after, aiDisabled, aiDimmed, aiStillOff };
+    })()`);
+    assert(escrowUi.before === false, '托管默认关闭');
+    assert(escrowUi.after === true, '点击“托管”应能切换托管开关');
+    assert(escrowUi.aiDisabled === true, '电脑席位的托管开关应被禁用');
+    assert(escrowUi.aiDimmed === true, '电脑席位的托管开关应有禁用样式');
+    assert(escrowUi.aiStillOff === true, '电脑席位不应能勾选托管');
+    await screenshot('00c-setup-escrow.png');
+
+    // 0.8 托管要真的传进引擎，并写进本地存储
+    const escrowGame = await evaluate(`(() => {
+      window.SBWarUI.start(['甲', '乙', '丙', '丁'], { firstPlayer: 0, escrowCoins: [0] });
+      const g = window.SBWarUI.getGame();
+      return {
+        player: g.players[0].escrow,
+        others: g.players.slice(1).map((p) => p.escrow),
+        listed: window.SBWarUI.getEscrowPlayers(),
+        stored: window.localStorage.getItem('sbwar.escrow')
+      };
+    })()`);
+    assert(escrowGame.player === true, '托管应传进引擎');
+    assert(escrowGame.others.every((value) => value === false), '其他席位不应托管');
+    assert(escrowGame.listed.join() === '0', '托管玩家列表应只含 0 号席位');
+    assert(escrowGame.stored === '[0]', `托管应写入本地存储，实际 ${escrowGame.stored}`);
+
+    // 0.9 托管玩家掷判定时不再弹硬币面板，幸运币由规则自动使用
+    const escrowRoll = await evaluate(`(async () => {
+      window.SBWarUI.start(['甲', '乙'], { firstPlayer: 0, escrowCoins: [0] });
+      const g = window.SBWarUI.getGame();
+      g.io.animateRoll = async () => {};
+      let n = 0;
+      g.rng = () => (n++ === 0 ? 0.1 : 0.9); // 先失败，再重掷成成功
+      g.players[0].body.lucky = 1;
+      const success = await g.rollCheck(g.players[0].body, '测试判定');
+      return {
+        success,
+        lucky: g.players[0].body.lucky,
+        panelHidden: document.getElementById('coinOverlay').classList.contains('hidden')
+      };
+    })()`);
+    assert(escrowRoll.success === true, '托管的幸运币应自动救回失败判定');
+    assert(escrowRoll.lucky === 0, '幸运币应被自动消耗');
+    assert(escrowRoll.panelHidden === true, '托管玩家不应弹硬币面板');
+
+    // 0.10 手动硬币与托管硬币同场：面板只列手动硬币，托管硬币标注为不可点
+    await evaluate(`(() => {
+      window.SBWarUI.start(['甲', '乙'], { firstPlayer: 0, escrowCoins: [1] });
+      const g = window.SBWarUI.getGame();
+      g.io.animateRoll = async () => {};
+      let n = 0;
+      g.rng = () => (n++ === 0 ? 0.1 : 0.9);
+      g.players[0].body.lucky = 1; // 手动
+      g.players[1].body.curse = 1; // 托管
+      g.rollCheck(g.players[0].body, '测试判定');
+      return true;
+    })()`);
+    await waitUntil("!document.getElementById('coinOverlay').classList.contains('hidden')", 5000);
+    const escrowPanel = await evaluate(`(() => ({
+      manual: document.querySelectorAll('#coinList .coin-card:not(.escrow-reserved):not(.ai-reserved)').length,
+      escrow: document.querySelectorAll('#coinList .coin-card.escrow-reserved').length,
+      escrowDisabled: document.querySelector('#coinList .coin-card.escrow-reserved').disabled,
+      hint: document.getElementById('coinHint').textContent
+    }))()`);
+    assert(escrowPanel.manual === 1, `面板只列出手动硬币，实际 ${escrowPanel.manual}`);
+    assert(escrowPanel.escrow === 1, `托管硬币要单独列出来，实际 ${escrowPanel.escrow}`);
+    assert(escrowPanel.escrowDisabled === true, '托管硬币不可点');
+    assert(escrowPanel.hint.includes('托管'), '面板提示应说明托管由规则自动决定');
+    await screenshot('00d-coin-escrow.png');
+    await evaluate("document.getElementById('coinConfirm0').click(); true");
+
+    // 托管是可选功能：验收完把开关和存档都还原，避免影响后面的场景
+    await evaluate(`(() => {
+      window.localStorage.removeItem('sbwar.escrow');
+      [0, 1, 2, 3].forEach((index) => {
+        const box = document.getElementById('escrow' + index);
+        if (box && box.checked) box.click();
+      });
+      return true;
+    })()`);
 
     // 1. 开局界面（演示入口会先播放先手动画）
     setupLoaded = false;

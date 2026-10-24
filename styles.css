@@ -1533,6 +1533,17 @@ input:focus-visible {
   transform: none;
 }
 
+/* 托管的硬币：展示出来但不可点，由规则自动决定 */
+.coin-card.escrow-reserved {
+  opacity: 0.58;
+  cursor: default;
+  border-style: dashed;
+}
+
+.coin-card.escrow-reserved:hover {
+  transform: none;
+}
+
 .coin-card-icon {
   flex: 0 0 auto;
   width: 34px;
@@ -2126,7 +2137,7 @@ input:focus-visible {
   box-shadow: 0 0 0 3px rgba(232, 180, 90, 0.08);
 }
 
-/* 席位行：名字 + 电脑开关（每个 label 只绑定一个控件） */
+/* 席位行：名字 + 电脑开关 + 托管开关（每个 label 只绑定一个控件） */
 .setup-row {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -2138,6 +2149,14 @@ input:focus-visible {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.025);
+}
+
+/* 电脑 / 托管 两个开关并排放在同一格里 */
+.setup-seats {
+  grid-area: seat;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .setup-row.hidden {
@@ -2153,7 +2172,6 @@ input:focus-visible {
 }
 
 .setup-seat {
-  grid-area: seat;
   display: flex;
   align-items: center;
   padding: 5px 3px;
@@ -2195,6 +2213,23 @@ input:focus-visible {
 .setup-seat input:focus-visible + .setup-seat-tag {
   outline: 2px solid var(--gold);
   outline-offset: 2px;
+}
+
+/* 电脑席位的硬币托管不可用：AI 自带硬币策略，比托管规则更聪明 */
+.setup-seat.disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.setup-seat.disabled:hover .setup-seat-tag {
+  border-color: var(--line-strong);
+  color: var(--muted-2);
+}
+
+.setup-seat.disabled input:checked + .setup-seat-tag {
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--muted-2);
 }
 
 .setup-foot {

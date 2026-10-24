@@ -243,7 +243,9 @@
         index: i,
         name,
         body: makeEntity({ id: `p${i}`, name, owner: i, isStandin: false, maxHp: this.bodyMax }),
-        standin: null
+        standin: null,
+        /** 硬币托管：开启后幸运币/诅咒币用不用由规则自动决定，不再手动确认 */
+        escrow: Array.isArray(opts.escrowCoins) && opts.escrowCoins.includes(i)
       }));
 
       const first = opts.firstPlayer;
@@ -841,51 +843,141 @@
       // 没有任何可用硬币时不需要打开干预界面
       if (!this.collectCoinInterventions(roller, used).length) return current;
 
+      // 手动方表态「不再使用」后就不再重复弹面板，但托管硬币仍要按规则收尾
+      let manualDone = false;
+
       while (true) {
         const coins = this.collectCoinInterventions(roller, used);
         // 硬币用尽后直接结束，不再保留确认面板
         if (!coins.length) break;
 
-        const decision = await this.io.chooseCoinIntervention({
-          roller: this.describe(roller),
-          label,
-          value: current,
-          sides,
-          isCheck,
-          kind: isCheck ? 'check' : 'die',
-          display: this.formatValue(current, sides, isCheck),
-          coins,
-          meta: meta || null
-        });
-
-        if (!decision || decision.done) break;
-
-        const coin = coins.find((item) => item.id === decision.coinId);
-        if (!coin) break;
-
-        const holder = this.getEntity(coin.holderId);
-        if (!holder || !holder.alive || holder[coin.coin] <= 0) {
-          used.add(coin.id);
+        // ① 掷数者自己的托管幸运币：先于手动决策结算
+        const escrowedLucky = coins.find((coin) => coin.coin === 'lucky' && this.isEscrowed(coin.playerIdx));
+        if (escrowedLucky) {
+          current = await this.resolveEscrowedCoin(
+            escrowedLucky, roller, label, current, sides, isCheck, meta, rollAgain, used
+          );
           continue;
         }
 
-        holder[coin.coin] = 0;
-        used.add(coin.id);
-        this.emitChanged();
-        const stats = this.stats[holder.owner];
-        if (stats) stats.coins += 1;
+        // ② 未托管玩家的硬币：交给面板手动决定（托管硬币不进面板）
+        const manualCoins = coins.filter((coin) => !this.isEscrowed(coin.playerIdx));
+        if (manualCoins.length && !manualDone) {
+          const decision = await this.io.chooseCoinIntervention({
+            roller: this.describe(roller),
+            label,
+            value: current,
+            sides,
+            isCheck,
+            kind: isCheck ? 'check' : 'die',
+            display: this.formatValue(current, sides, isCheck),
+            coins: manualCoins,
+            escrowed: coins.filter((coin) => this.isEscrowed(coin.playerIdx)),
+            meta: meta || null
+          });
 
-        const next = rollAgain();
-        const coinName = coin.coin === 'lucky' ? '幸运币' : '诅咒币';
-        await this.animateRoll(roller, label, next, sides, 'reroll', coin.coin, meta, isCheck ? 'check' : 'die');
-        this.log(
-          `${holder.name} 使用${coinName}重掷【${label}】：${this.formatValue(current, sides, isCheck)} → ${this.formatValue(next, sides, isCheck)}`,
-          'coin'
-        );
-        current = next;
+          if (!decision || decision.done) {
+            manualDone = true;
+            continue;
+          }
+
+          const coin = manualCoins.find((item) => item.id === decision.coinId);
+          if (!coin) {
+            manualDone = true;
+            continue;
+          }
+
+          const holder = this.getEntity(coin.holderId);
+          if (!holder || !holder.alive || holder[coin.coin] <= 0) {
+            used.add(coin.id);
+            continue;
+          }
+
+          current = await this.spendCoinAndReroll(roller, label, coin, current, sides, isCheck, meta, rollAgain, used);
+          continue;
+        }
+
+        // ③ 托管玩家的诅咒币：最后结算，保证作用在「最终判定值」上
+        const escrowedCurse = coins.find((coin) => this.isEscrowed(coin.playerIdx));
+        if (escrowedCurse) {
+          current = await this.resolveEscrowedCoin(
+            escrowedCurse, roller, label, current, sides, isCheck, meta, rollAgain, used
+          );
+          continue;
+        }
+
+        break;
       }
 
       return current;
+    }
+
+    /**
+     * 托管硬币的自动决策：用还是弃权完全由规则决定。
+     * 用掉 → 重掷并返回新值；弃权 → 保留硬币，只在本次判定中失效。
+     */
+    async resolveEscrowedCoin(coin, roller, label, current, sides, isCheck, meta, rollAgain, used) {
+      const holder = this.getEntity(coin.holderId);
+      if (!holder || !holder.alive || holder[coin.coin] <= 0) {
+        used.add(coin.id);
+        return current;
+      }
+      if (!this.shouldUseEscrowedCoin(coin, current, isCheck)) {
+        used.add(coin.id);
+        const coinName = coin.coin === 'lucky' ? '幸运币' : '诅咒币';
+        this.log(`${holder.name} 托管硬币：本次弃权${coinName}`, 'coin');
+        return current;
+      }
+      return await this.spendCoinAndReroll(roller, label, coin, current, sides, isCheck, meta, rollAgain, used);
+    }
+
+    /** 消费一枚硬币并重掷，返回新的结果 */
+    async spendCoinAndReroll(roller, label, coin, current, sides, isCheck, meta, rollAgain, used) {
+      const holder = this.getEntity(coin.holderId);
+      holder[coin.coin] = 0;
+      used.add(coin.id);
+      this.emitChanged();
+      const stats = this.stats[holder.owner];
+      if (stats) stats.coins += 1;
+
+      const next = rollAgain();
+      const coinName = coin.coin === 'lucky' ? '幸运币' : '诅咒币';
+      await this.animateRoll(roller, label, next, sides, 'reroll', coin.coin, meta, isCheck ? 'check' : 'die');
+      this.log(
+        `${holder.name} 使用${coinName}重掷【${label}】：${this.formatValue(current, sides, isCheck)} → ${this.formatValue(next, sides, isCheck)}`,
+        'coin'
+      );
+      return next;
+    }
+
+    /** 该玩家是否开启了硬币托管 */
+    isEscrowed(playerIdx) {
+      const player = this.players[playerIdx];
+      return Boolean(player && player.escrow);
+    }
+
+    /** 运行中开关某位玩家的硬币托管 */
+    setCoinEscrow(playerIdx, on) {
+      const player = this.players[playerIdx];
+      if (!player) return false;
+      player.escrow = !!on;
+      this.emitChanged();
+      return player.escrow;
+    }
+
+    /**
+     * 托管规则：硬币用不用由规则决定，不再手动确认。
+     *   · **自己的幸运币**：判定失败才用（已经成功就别重掷）→ 自己投出 1 时弃权。
+     *   · **对手的诅咒币**：对方判定成功才用（已经失败就别重掷）→ 对方投出 0 时弃权。
+     *   · 非判定（骰子，如偷取随机选择）：一律不干预。
+     * 与难度 2 的硬币策略一致，但它是**可选**功能：
+     * 托管会用幸运币把失败的判定救回来，削弱“故意普攻失败 → 自伤 → 复活 → 刷技能槽”这类打法。
+     */
+    shouldUseEscrowedCoin(coin, value, isCheck) {
+      if (!isCheck) return false;
+      const success = value === 1;
+      if (coin.coin === 'lucky') return !success; // 自己失败 → 用幸运币救
+      return success; // 对方成功 → 用诅咒币压
     }
 
     async rollCheck(entity, label) {
