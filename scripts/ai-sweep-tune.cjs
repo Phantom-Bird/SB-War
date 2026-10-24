@@ -89,14 +89,15 @@ const BASELINE_SCORE = Object.assign({}, AI.HARD_SCORE);
 
 const VARIANTS = [
   { name: 'A 当前参数', tune: {}, score: {} },
-  { name: 'B 破盾磨刀60', tune: { sharpenBlockedTarget: 60 }, score: {} },
-  { name: 'C 破盾磨刀80', tune: { sharpenBlockedTarget: 80 }, score: {} },
-  { name: 'D 基础磨刀45', tune: { sharpenBase: 45 }, score: {} },
-  { name: 'E 基础45+破盾60', tune: { sharpenBase: 45, sharpenBlockedTarget: 60 }, score: {} },
-  { name: 'F 磨刀全关', tune: { sharpenBase: -100, sharpenBlockedTarget: 0 }, score: {} },
-  { name: 'G 异质100', tune: { heteroEnemyShielded: 100 }, score: {} },
-  { name: 'H 异质130', tune: { heteroEnemyShielded: 130 }, score: {} },
-  { name: 'I 护盾80/65', tune: { shieldBase: 80, shieldAt1Hp: 65 }, score: {} }
+  { name: 'B 召唤120+顶3', tune: { summonBase: 120, standinActorHp: 3 }, score: {} },
+  { name: 'C 召唤105+顶3', tune: { summonBase: 105, standinActorHp: 3 }, score: {} },
+  { name: 'D 召唤130+顶3', tune: { summonBase: 130, standinActorHp: 3 }, score: {} },
+  { name: 'E 召唤145+顶2', tune: { summonBase: 145, standinActorHp: 2 }, score: {} },
+  { name: 'F 收割权重80', tune: {}, score: { KILL_BODY: 80 } },
+  { name: 'G 收割权重80+召唤120', tune: { summonBase: 120 }, score: { KILL_BODY: 80 } },
+  { name: 'H 异质100', tune: { heteroEnemyShielded: 100 }, score: {} },
+  { name: 'I 护盾80/65', tune: { shieldBase: 80, shieldAt1Hp: 65 }, score: {} },
+  { name: 'J 幸运62', tune: { luckyBase: 62 }, score: {} }
 ];
 
 (async () => {

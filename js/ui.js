@@ -314,11 +314,12 @@
     }
 
     if (game.over) {
+      const draw = game.winner === null || game.winner === undefined;
       return `
         <div class="result-card">
           <p class="result-kicker">BATTLE OVER</p>
-          <h2 class="result-title">${esc(playerName(game.winner))} 胜利</h2>
-          <p class="result-sub">第 ${game.turn} 回合结束 · 生命耗尽且复活失败</p>
+          <h2 class="result-title">${draw ? '平局' : `${esc(playerName(game.winner))} 胜利`}</h2>
+          <p class="result-sub">第 ${game.turn} 回合结束 · ${esc(drawReasonText(game))}</p>
         </div>
       `;
     }
@@ -392,7 +393,8 @@
     }
     if (game.over) {
       el.turnStatus.classList.add('over');
-      el.turnStatusText.textContent = `战斗结束 · ${playerName(game.winner)} 获胜`;
+      const draw = game.winner === null || game.winner === undefined;
+      el.turnStatusText.textContent = draw ? '战斗结束 · 平局' : `战斗结束 · ${playerName(game.winner)} 获胜`;
       el.turnBadge.textContent = `T${game.turn}`;
       return;
     }
@@ -1039,6 +1041,22 @@
     window.setTimeout(() => seats[0].name.focus({ preventScroll: true }), 60);
   }
 
+  /**
+   * 和局原因的一句话说明（战报、结算卡都用它）。
+   * - all-dead：全员阵亡
+   * - turn-limit：超过人数 × 25 回合上限
+   * - pass-streak：场上所有玩家都选择了跳过回合
+   */
+  function drawReasonText(instance) {
+    const reason = instance && instance.drawReason;
+    if (reason === 'turn-limit') {
+      const limit = typeof instance.drawTurnLimit === 'function' ? instance.drawTurnLimit() : 0;
+      return `超过 ${limit} 回合上限`;
+    }
+    if (reason === 'pass-streak') return '全体玩家跳过回合';
+    return '全员阵亡';
+  }
+
   function victoryReportHTML() {
     const stats = game.stats || [];
     const ranking = typeof game.finalRanking === 'function' ? game.finalRanking() : [];
@@ -1049,7 +1067,7 @@
       const s = stats[index] || {};
       const body = player.body;
       const row = rankOf.get(index) || null;
-      const rankText = !row ? '—' : row.rank == null ? '平局' : `第 ${row.rank} 名`;
+      const rankText = !row ? '—' : row.rank == null ? '平局' : row.tied ? `并列第 ${row.rank} 名` : `第 ${row.rank} 名`;
       const survived = s.survivedTurns || 0;
       const survivedText = survived > 0 ? `${survived} 回合` : '—';
       const rows = [
@@ -1083,9 +1101,10 @@
       ? `<ol class="report-rank-list">
           ${ranking
             .map((row, i) => {
+              const tied = row.tied ? ' · 并列' : '';
               const note = row.eliminatedTurn == null
-                ? `存活 ${row.survivedTurns} 回合 · 坚持到最终`
-                : `存活 ${row.survivedTurns} 回合 · 第 ${row.eliminatedTurn} 回合退场`;
+                ? `存活 ${row.survivedTurns} 回合 · 坚持到最终${tied}`
+                : `存活 ${row.survivedTurns} 回合 · 第 ${row.eliminatedTurn} 回合退场${tied}`;
               const no = row.rank == null ? '—' : String(row.rank);
               const top = i === 0 && !draw ? ' is-top' : '';
               return `<li class="rank-row${top}">
@@ -1100,6 +1119,7 @@
 
     const order = (game.eliminationOrder || []).map((item) => item.name);
     const orderNote = order.length ? `退场顺序：${order.join(' → ')}` : '无人退场';
+    const headNote = draw ? `平局 · ${drawReasonText(game)} · 共 ${game.turn} 回合` : `共 ${game.turn} 回合`;
 
     const recent = game.logs
       .slice(-10)
@@ -1107,7 +1127,7 @@
       .join('');
 
     return `
-      <div class="report-head"><span>战报</span><small>共 ${game.turn} 回合</small></div>
+      <div class="report-head"><span>战报</span><small>${esc(headNote)}</small></div>
       <div class="report-rank">
         <div class="report-rank-head"><span>最终排名</span><small>${esc(orderNote)}</small></div>
         ${rankList}
@@ -1126,7 +1146,7 @@
     const multiplayer = game.isMultiplayer();
     el.victoryTitle.textContent = draw ? '平局' : `${playerName(game.winner)} 胜利`;
     el.victorySub.textContent = draw
-      ? `第 ${game.turn} 回合结束 · 全员阵亡`
+      ? `第 ${game.turn} 回合结束 · ${drawReasonText(game)}`
       : `第 ${game.turn} 回合结束 · ${multiplayer ? '其余玩家生命耗尽且复活失败' : '对手生命耗尽且复活失败'}`;
     el.victoryReport.innerHTML = victoryReportHTML();
     if (el.victoryReport.querySelector('.report-grid.is-battle')) {

@@ -231,12 +231,18 @@ test('回合按玩家顺序轮转，并跳过已出局的玩家', async () => {
   await game.eliminate(body(game, 0));
   assert.equal(game.over, false, '多人模式下还有两人在场，战斗继续');
 
+  // 甲已退场：轮到他时不会行动，回合直接交给乙
   await game.pass(0);
   assert.equal(game.current, 1, '已出局的玩家不会再行动，回合交给乙');
-  await game.pass(1);
-  assert.equal(game.current, 2);
-  await game.pass(2);
-  assert.equal(game.current, 1, '轮转时跳过已出局的甲');
+});
+
+test('轮转时跳过已退场的玩家', async () => {
+  const game = makeGame({ firstPlayer: 0, values: [0.9] });
+
+  await game.eliminate(body(game, 1)); // 乙退场
+  await game.pass(0);
+
+  assert.equal(game.current, 2, '乙已退场，回合从甲直接交给丙');
 });
 
 test('多人模式：只剩一名玩家时战斗才结束', async () => {

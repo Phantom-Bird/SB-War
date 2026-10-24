@@ -160,7 +160,15 @@ game.ensureTurnReady()             // 当前玩家已退场时自动交接回合
 game.bodyMaxHp()                   // 当前本体的生命值上限（随存活人数动态变化）
 game.syncMaxHp()                   // 有人退场后，把剩余玩家的上限调到新水平
 game.removeStandin(owner, reason)  // 清掉某位玩家的替身（本体退场 / 复活时调用）
+game.drawTurnLimit()               // 和局上限：人数 × 25（回合计数 = 行动次数）
+game.drawReason                    // null / 'all-dead' / 'turn-limit' / 'pass-streak'
+game.allAlivePassed()              // 场上所有存活玩家是否都选择了跳过回合
 ```
+
+**普通攻击的结算分层（改这块前先读 `js/engine.js` 的「伤害与效果」注释）**：
+
+- `resolveAttack(actor, targets)` —— 行动者发起的一次攻击（普通攻击选组 / 被反用的普通攻击都走这里）。**行动者的一次性效果**在这一层结算：磨刀整组共享同一份加成、攻击结束才消耗；小偷整组只触发一次。
+- `damage(source, target, amount, opts)` —— 单个目标的伤害。**目标自己的效果**（护盾 / 韧性 / 反甲）逐目标结算；`opts.amountFinal = true` 表示伤害值已定，不要再增幅或消耗磨刀。
 
 UI 和 AI **不要直接修改** `hp`、`slots`、效果字段来推进对局；通过 `act/pass/damage` 等公开方法，避免绕过判定、复活、统计和动画。当前 UI 只在测试/演示状态构造时直接改字段，属于调试行为。
 
@@ -267,7 +275,8 @@ UI 和 AI **不要直接修改** `hp`、`slots`、效果字段来推进对局；
 | **替身** | 每位玩家最多一个；独立生命/槽/效果，可行动、可被选中。**替身不再复活**：被打空直接消失（连负生命惩罚判定都不做）。**本体退场或本体复活时，替身一并消散**（`removeStandin()`）——这条既是平衡调整，也是修掉“已退场的玩家还挂在替身组里被群体攻击结算”的关键。 |
 | 伤害连锁 | 反甲链最多递归 16 层。 |
 | 多人收尾 | 被淘汰的玩家不再行动，回合按在场玩家顺序轮转；只剩一人时结束；全员阵亡（如反甲连锁同时带走最后两人）判平局，`winner === null`。 |
-| **战报排名** | `finalRanking()`：胜者第一，其余按“在场上待得更久”排序（最后退场的排前面）；平局时 `rank` 为 `null`。`survivedTurns`＝在场回合数，`eliminatedTurn`＝退场发生在第几个回合。 |
+| **战报排名** | `finalRanking()`：胜者第一，其余按“在场上待得更久”排序（最后退场的排前面）；和局时**还在场上的玩家并列第一**（`rank = 1` 且 `tied = true`），已退场的按存活回合排在后面；全员阵亡（真没人赢）时不排名。`survivedTurns`＝在场回合数，`eliminatedTurn`＝退场发生在第几个回合。 |
+| **和局** | ① 回合计数超过「人数 × 25」→ 和局（`drawReason = 'turn-limit'`）；② 场上所有玩家都选择跳过回合 → 和局（`drawReason = 'pass-streak'`）。有人真的出手会清空「连续跳过」计数（`passStreak`）。和局时 `winner === null`，在场玩家并列第一。上限常量是 `DRAW_TURNS_PER_PLAYER`。 |
 
 近期修复：
 

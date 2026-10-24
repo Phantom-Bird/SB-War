@@ -18,6 +18,11 @@
   const STANDIN_SLOTS = 2;
   const MIN_PLAYERS = 2;
   const MAX_PLAYERS = 4;
+  /**
+   * 和局上限：人数 × 这个数 = 回合计数上限。
+   * 回合计数 = 行动次数（每人一回合 +1），所以双人局是 50 次行动。
+   */
+  const DRAW_TURNS_PER_PLAYER = 25;
 
   /**
    * 本体生命值上限 = 人数 + 1。
@@ -221,6 +226,10 @@
       this.logs = [];
       this.stats = [];
       this.eliminationOrder = [];
+      /** 和局原因：null / all-dead（全员阵亡）/ turn-limit（超上限）/ pass-streak（全场跳过） */
+      this.drawReason = null;
+      /** 连续跳过回合的玩家（判定“全场都跳过 → 和局”） */
+      this.passStreak = new Set();
       this._logId = 0;
     }
 
@@ -249,6 +258,8 @@
       this.logs = [];
       this._logId = 0;
       this.eliminationOrder = [];
+      this.drawReason = null;
+      this.passStreak = new Set();
       this.stats = this.players.map(() => ({
         damageDealt: 0,
         damageTaken: 0,
@@ -476,6 +487,9 @@
       if (!skill) return false;
       if (!this.canUseSkill(actor, skillId)) return false;
 
+      // 有人真的出手了 → 连续跳过计数清零
+      this.passStreak.clear();
+
       this.busy = true;
       this.emitChanged();
 
@@ -520,12 +534,25 @@
       this.emitChanged();
       try {
         this.log(`${this.players[playerIdx].name} 跳过本次行动`, 'turn');
+        this.passStreak.add(playerIdx);
+        // 场上所有玩家都选择跳过 → 和局（没人愿意再打下去）
+        if (this.allAlivePassed()) {
+          await this.declareDraw('pass-streak');
+          return true;
+        }
         await this.endTurn();
       } finally {
         this.busy = false;
         this.emitChanged();
       }
       return true;
+    }
+
+    /** 场上所有存活玩家是否都选择了跳过回合 */
+    allAlivePassed() {
+      const alive = this.alivePlayers();
+      if (!alive.length) return false;
+      return alive.every((player) => this.passStreak.has(player.index));
     }
 
     occupy(entity, skillId) {
@@ -576,7 +603,7 @@
         if (ctx.forced) {
           const target = ctx.originalActor || null;
           if (target && target.alive) {
-            await this.damage(actor, target, 1, {});
+            await this.resolveAttack(actor, [target]);
           } else {
             this.log('没有可攻击的目标', 'fail');
           }
@@ -609,34 +636,7 @@
       const targets = option.entities.filter((entity) => entity.alive);
       this.log(`${actor.name} 的【普通攻击】攻击${option.label}：${targets.map((entity) => entity.name).join('、')}`, 'attack');
 
-      // 磨刀是“**这一次攻击**”的加成：整组目标共享同一份加成，攻击结束后统一消耗。
-      // 早先是由每个目标各自去消费磨刀，导致组内第一个目标把磨刀吃掉，
-      // 后面的目标只吃 1 点基础伤害——护盾一挡就等于没打中（已修）。
-      const bonus = actor.sharpen > 0 ? actor.sharpen : 0;
-      let sharpenUsed = false;
-
-      for (let i = 0; i < targets.length; i += 1) {
-        const target = targets[i];
-        if (this.over || !target.alive) continue;
-        // 目标的主人已经退场就不再结算（退场会连带清掉替身，这里只是兜底）
-        const owner = this.players[target.owner];
-        if (!owner || !owner.body || !owner.body.alive) continue;
-        if (i > 0) await this.beat(260);
-
-        // 真实伤害（异质对无异质）不增幅磨刀，也不该消耗磨刀层数
-        const real = actor.hetero !== target.hetero;
-        let amount = 1;
-        if (!real && bonus > 0) {
-          amount = 1 + bonus;
-          if (!sharpenUsed) {
-            sharpenUsed = true;
-            this.log(`${actor.name} 消耗 ${bonus} 层【磨刀】，伤害提升至 ${amount}`, 'damage');
-          }
-        }
-        await this.damage(actor, target, amount, { noSharpen: true });
-      }
-
-      if (sharpenUsed) actor.sharpen = 0;
+      await this.resolveAttack(actor, targets);
     }
 
     async pickTargetGroup(actor, options, purpose) {
@@ -937,6 +937,56 @@
     }
 
     // ---------------------------------------------------------- 伤害与效果
+    //
+    // 这里有两类效果，**结算口径不同**。改这块之前先读这一段（坑位见 HANDOFF §9-24）：
+    //
+    // 1) **行动者的一次性效果**（磨刀 / 小偷）——按“**一次行动**”结算，不是按“一个目标”。
+    //    · 磨刀是“这一次攻击”的伤害加成：群体攻击时**整组共享同一份加成**，
+    //      攻击结束后才统一消耗（见 resolveAttack）。真实伤害（异质）不增幅也不消耗。
+    //    · 小偷是“伤害结算后”触发：整组只触发一次（第一次命中就清掉标志位）。
+    // 2) **目标自己的效果**（护盾 / 韧性 / 反甲）——按“**每一个目标**”结算，在 damage() 里处理。
+    //
+    // 早先磨刀是在 damage() 里逐目标消费的，于是组内第一个目标就把磨刀吃掉，
+    // 后面的目标只吃 1 点基础伤害——带护盾的目标等于完全没被命中。已修。
+
+    /**
+     * 结算一次普通攻击：行动者对一组目标各造成 1 点伤害（可被磨刀增幅）。
+     *
+     * 这是“行动者的一次性效果”的结算层：
+     *   · 磨刀：整组共用的加成，攻击结束后统一消耗；
+     *   · 小偷：整组只触发一次（在 damage() 里第一次命中时清掉标志位）。
+     * 目标自己的效果（护盾 / 韧性 / 反甲）由 damage() 逐目标结算。
+     *
+     * @param {object} actor 行动者
+     * @param {Array} targets 目标实体列表（已死 / 主人已退场的会被跳过）
+     * @param {object} opts { amountFinal } 传 true 表示伤害值已定，不要再增幅磨刀
+     */
+    async resolveAttack(actor, targets, opts = {}) {
+      const bonus = actor.sharpen > 0 ? actor.sharpen : 0;
+      let sharpenUsed = false;
+
+      for (let i = 0; i < targets.length; i += 1) {
+        const target = targets[i];
+        if (this.over || !target || !target.alive) continue;
+        // 目标的主人已经退场就不再结算（退场会连带清掉替身，这里只是兜底）
+        const owner = this.players[target.owner];
+        if (!owner || !owner.body || !owner.body.alive) continue;
+        if (i > 0) await this.beat(260);
+
+        let amount = 1;
+        // 真实伤害（异质对无异质）既不增幅也不消耗磨刀层数
+        if (!opts.amountFinal && bonus > 0 && actor.hetero === target.hetero) {
+          amount = 1 + bonus;
+          if (!sharpenUsed) {
+            sharpenUsed = true;
+            this.log(`${actor.name} 消耗 ${bonus} 层【磨刀】，伤害提升至 ${amount}`, 'damage');
+          }
+        }
+        await this.damage(actor, target, amount, { amountFinal: true });
+      }
+
+      if (sharpenUsed) actor.sharpen = 0;
+    }
 
     async damage(source, target, amount, opts = {}) {
       if (this.over || !target || !target.alive || amount <= 0) return;
@@ -957,7 +1007,7 @@
         if (source && source.sharpen > 0) {
           this.log(`${source.name} 的磨刀层数保留（${source.sharpen} 层）`, 'effect');
         }
-      } else if (source && source.sharpen > 0 && !opts.noSharpen) {
+      } else if (source && source.sharpen > 0 && !opts.amountFinal) {
         const bonus = source.sharpen;
         source.sharpen = 0;
         amount += bonus;
@@ -1336,6 +1386,7 @@
 
       // 本体出局：替身随之消散（已退场的玩家不该再留在任何目标组里）
       this.removeStandin(owner, '随本体退场一同消散', 'death');
+      this.passStreak.delete(entity.owner);
 
       // 本体出局：多人模式下只是退场，场上只剩一人时才结束战斗
       const survivors = this.alivePlayers();
@@ -1355,6 +1406,7 @@
       this.winner = survivors.length === 1 ? survivors[0].index : null;
       this.finalizeStats();
       if (this.winner === null) {
+        this.drawReason = 'all-dead';
         this.log('无人存活，本局平局', 'system');
         this.io.onGameOver({ winner: null, winnerName: null, draw: true });
       } else {
@@ -1393,8 +1445,8 @@
 
     /**
      * 最终排名：胜者第一；其余按“在场上待得更久”排序（最后退场的排在前面）。
-     * 平局（全员阵亡）时不排名，用 draw 标记。
-     * @returns {Array<{index:number,name:string,rank:number|null,survivedTurns:number,eliminatedTurn:number|null,alive:boolean}>}
+     * 和局时**还在场上的玩家并列第一**；全员阵亡（真没人赢）时不排名。
+     * @returns {Array<{index:number,name:string,rank:number|null,tied:boolean,survivedTurns:number,eliminatedTurn:number|null,alive:boolean}>}
      */
     finalRanking() {
       const elimOrder = new Map(this.eliminationOrder.map((item, i) => [item.index, i]));
@@ -1420,9 +1472,30 @@
         return a.index - b.index;
       });
 
-      rows.forEach((row, i) => {
-        row.rank = draw ? null : i + 1;
+      if (draw) {
+        const aliveRows = rows.filter((row) => row.alive);
+        if (aliveRows.length) {
+          // 和局：还在场上的玩家并列第一，其余按存活回合排在后面
+          aliveRows.forEach((row) => { row.rank = 1; });
+          let next = aliveRows.length + 1;
+          rows.filter((row) => !row.alive).forEach((row) => { row.rank = next; next += 1; });
+        } else {
+          rows.forEach((row) => { row.rank = null; });
+        }
+      } else {
+        rows.forEach((row, i) => { row.rank = i + 1; });
+      }
+
+      // 同一名次的人数 > 1 → 并列
+      const count = new Map();
+      rows.forEach((row) => {
+        if (row.rank == null) return;
+        count.set(row.rank, (count.get(row.rank) || 0) + 1);
       });
+      rows.forEach((row) => {
+        row.tied = row.rank != null && count.get(row.rank) > 1;
+      });
+
       return rows;
     }
 
@@ -1458,6 +1531,40 @@
       this.current = this.nextPlayerAfter(this.current);
       this.turn += 1;
       this.announceTurn();
+      this.emitChanged();
+
+      // 超过回合上限（人数 × 25）→ 和局，避免一局打太久
+      if (this.turn > this.drawTurnLimit()) {
+        await this.declareDraw('turn-limit');
+      }
+    }
+
+    /** 和局的回合上限：人数 × DRAW_TURNS_PER_PLAYER */
+    drawTurnLimit() {
+      return this.players.length * DRAW_TURNS_PER_PLAYER;
+    }
+
+    /**
+     * 判定和局并结束战斗。
+     * @param {string} reason 'turn-limit'（超上限）/ 'pass-streak'（全场跳过）
+     */
+    async declareDraw(reason) {
+      if (this.over) return;
+      this.over = true;
+      this.winner = null;
+      this.drawReason = reason;
+      this.finalizeStats();
+
+      if (reason === 'turn-limit') {
+        this.log(`超过 ${this.drawTurnLimit()} 回合上限，本局和局`, 'system');
+      } else {
+        this.log('场上所有玩家都选择跳过回合，本局和局', 'system');
+      }
+      const alive = this.alivePlayers();
+      if (alive.length) {
+        this.log(`仍在场上的 ${alive.map((player) => player.name).join('、')} 并列第一`, 'system');
+      }
+      this.io.onGameOver({ winner: null, winnerName: null, draw: true, reason });
       this.emitChanged();
     }
 
@@ -1501,6 +1608,7 @@
     STANDIN_SLOTS,
     MIN_PLAYERS,
     MAX_PLAYERS,
+    DRAW_TURNS_PER_PLAYER,
     MODE_DUEL,
     MODE_BATTLE
   };

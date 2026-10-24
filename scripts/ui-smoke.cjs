@@ -771,6 +771,29 @@ async function main() {
     }
     assert(battleReportLayout.wrappedCells === 0, `战报统计项不应换行：${battleReportLayout.wrappedCells} 项异常`);
 
+    // 17.6 和局：全体玩家跳过回合 → 平局，在场玩家并列第一
+    await evaluate(`
+      (async () => {
+        window.SBWarUI.start(['甲', '乙', '丙'], { firstPlayer: 0 });
+        const g = window.SBWarUI.getGame();
+        for (let i = 0; i < 3 && !g.over; i += 1) {
+          const idx = g.current;
+          await g.pass(idx);
+        }
+        window.SBWarUI.render();
+        return true;
+      })()
+    `);
+    await waitUntil("!document.getElementById('victoryOverlay').classList.contains('hidden')", 12000);
+    const drawReport = await evaluate("document.getElementById('victoryReport').textContent");
+    assert(drawReport.includes('平局'), '全员跳过应判平局');
+    assert(drawReport.includes('并列'), '和局时在场玩家应并列第一');
+    assert(
+      (await evaluate("document.querySelectorAll('#victoryReport .rank-row').length")) === 3,
+      '和局战报仍应列出全部玩家'
+    );
+    await screenshot('17c-multiplayer-draw.png');
+
     // 18. 移动端布局（四人混战，检查面板不会横向溢出）
     await cdp.send('Emulation.setDeviceMetricsOverride', {
       width: 390,
@@ -790,6 +813,45 @@ async function main() {
       7000
     );
     assert((await evaluate("document.querySelectorAll('.player-panel').length")) === 4, '移动端四人混战应显示 4 块面板');
+
+    // 18.1 移动端开局面板：不能超出屏幕高度，超出时要能滚动
+    const setupFit = await evaluate(`(() => {
+      window.SBWarUI.reset();
+      const card = document.querySelector('.setup-card');
+      const rect = card.getBoundingClientRect();
+      return {
+        viewportH: window.innerHeight,
+        cardH: Math.round(rect.height),
+        cardTop: Math.round(rect.top),
+        clientH: card.clientHeight,
+        scrollH: card.scrollHeight,
+        overflowY: getComputedStyle(card).overflowY
+      };
+    })()`);
+    await sleep(200);
+    assert(
+      setupFit.cardH <= setupFit.viewportH,
+      `移动端开局面板超出屏幕：card=${setupFit.cardH} viewport=${setupFit.viewportH}`
+    );
+    assert(
+      setupFit.cardTop >= 0,
+      `移动端开局面板顶部被裁掉：top=${setupFit.cardTop}`
+    );
+    assert(
+      setupFit.overflowY === 'auto' || setupFit.overflowY === 'scroll',
+      `开局面板应可滚动：overflow-y=${setupFit.overflowY}`
+    );
+    if (setupFit.scrollH > setupFit.clientH) {
+      await evaluate("document.querySelector('.setup-card').scrollTop = 9999; true");
+      await sleep(150);
+      const scrolled = await evaluate("document.querySelector('.setup-card').scrollTop");
+      assert(scrolled > 0, '开局面板内容超出时应能滚动到底');
+      await evaluate("document.querySelector('.setup-card').scrollTop = 0; true");
+    }
+    await screenshot('18b-mobile-setup.png');
+    await evaluate("window.SBWarUI.start(['玩家一', '玩家二', '玩家三', '玩家四'], { aiPlayerIndexes: [1, 2, 3], firstPlayer: 0, difficulty: 2 }); true");
+    await sleep(300);
+
     const metrics = await evaluate(`(() => ({
       viewport: window.innerWidth,
       document: document.documentElement.scrollWidth,

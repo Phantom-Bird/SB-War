@@ -278,3 +278,61 @@ test('回归：磨刀覆盖整组时，即使第一个目标直接退场，后�
   assert.equal(c.body.shield, 0, '丙的护盾照样被消耗');
   assert.equal(c.body.split.remaining, 2, '丙照样吃到 2 点伤害，掉了一个拆分阶段');
 });
+
+test('和局：场上所有玩家都跳过回合时判和局，在场玩家并列第一', async () => {
+  const game = makeGame({ firstPlayer: 0, values: [0.9] });
+
+  await game.pass(0);
+  assert.equal(game.over, false, '还有人没跳过，继续打');
+  await game.pass(1);
+  assert.equal(game.over, false);
+  await game.pass(2);
+
+  assert.equal(game.over, true, '全员跳过 → 和局');
+  assert.equal(game.winner, null);
+  assert.equal(game.drawReason, 'pass-streak');
+
+  const ranking = game.finalRanking();
+  assert.deepEqual(ranking.map((row) => row.rank), [1, 1, 1], '还在场上的玩家并列第一');
+  assert.ok(ranking.every((row) => row.tied), '并列要标出来');
+  assert.match(texts(game), /场上所有玩家都选择跳过回合，本局和局/);
+});
+
+test('和局：有人出手就会清空连续跳过计数', async () => {
+  const game = makeGame({ firstPlayer: 0, values: [0.9] });
+
+  await game.pass(0);
+  await game.pass(1);
+  await game.act(2, 'p2', 0); // 丙出手 → 连跳计数清零
+  await game.pass(0);
+
+  assert.equal(game.over, false, '有人动过手，就不算全员跳过');
+});
+
+test('和局：超过人数 × 25 回合上限后判和局', async () => {
+  const game = makeGame({ firstPlayer: 0, values: [0.9] });
+  assert.equal(game.drawTurnLimit(), 75, '3 人局 → 75 回合');
+  assert.equal(makeGame({ names: ['甲', '乙'] }).drawTurnLimit(), 50, '2 人局 → 50 回合');
+  assert.equal(makeGame({ names: ['甲', '乙', '丙', '丁'] }).drawTurnLimit(), 100, '4 人局 → 100 回合');
+
+  game.turn = game.drawTurnLimit();
+  await game.pass(0);
+
+  assert.equal(game.over, true);
+  assert.equal(game.winner, null);
+  assert.equal(game.drawReason, 'turn-limit');
+  assert.match(texts(game), /超过 75 回合上限，本局和局/);
+});
+
+test('和局：已退场的玩家排在仍在场的玩家之后', async () => {
+  const game = makeGame({ firstPlayer: 0, values: [0.9] });
+
+  await game.eliminate(body(game, 2)); // 丙退场
+  await game.pass(0);
+  await game.pass(1);
+
+  assert.equal(game.over, true);
+  const ranking = game.finalRanking();
+  assert.deepEqual(ranking.map((row) => row.name), ['甲', '乙', '丙']);
+  assert.deepEqual(ranking.map((row) => row.rank), [1, 1, 3], '在场的并列第一，丙第三');
+});
