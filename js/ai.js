@@ -16,6 +16,9 @@
  *   4. 磨刀放大的是“下一次伤害”，自伤也算，所以它同时放大自己的风险。
  *   5. 幸运币 / 诅咒币是**覆盖**原结果：幸运币把失败救回来（成功率 50%→75%），
  *      诅咒币把对方的成功压成失败（成功率 50%→25%）。
+ *   6. 替身**不再复活**：被打空直接消失；本体退场或本体复活时替身一并消散。
+ *      所以替身是一次性挡箭牌，召唤它非常划算。
+ *   7. 本体生命值上限＝在场人数 + 1，有人退场时剩余玩家的上限会下调。
  */
 (function (root, factory) {
   const api = factory();
@@ -107,7 +110,7 @@
     let value = 0;
     for (const entity of entities) {
       if (entity.isStandin) {
-        // 拆掉替身 = 永久减少一个会行动、能被选中、能复活的单位
+        // 拆掉替身 = 少一个能行动、能被选中的单位（替身不再复活，打掉就真的没了）
         value += 55;
         continue;
       }
@@ -159,7 +162,13 @@
     if (!body || !standin) return body || standin;
 
     // 本体血量偏低：普攻失败的自伤会把它打到 0，交给替身扛这一手
-    const switchHp = HARD_TUNE.standinActorHp;
+    // 阈值两种口径：
+    //   绝对值（standinActorRelative = 0）：本体血量 ≤ standinActorHp 就让替身上
+    //   相对值（standinActorRelative = 1）：本体没满血就让替身上（= 上限 - 1），
+    //     这样本体满血时一定会自己出手，不会退化成“本体只负责召唤、替身负责输出”
+    const switchHp = HARD_TUNE.standinActorRelative
+      ? Math.max(1, body.maxHp - 1)
+      : HARD_TUNE.standinActorHp;
     if (body.hp <= switchHp) return standin;
     // 本体再高一点但带着磨刀：自伤会被放大，同样致命
     if (body.hp <= switchHp + 1 && body.sharpen > 0) return standin;
@@ -243,8 +252,8 @@
     attackAllBlockedPenalty: 22,
 
     // —— 护盾
-    shieldBase: 62,
-    shieldAt1Hp: 44,
+    shieldBase: 70,
+    shieldAt1Hp: 55,
     shieldAt2Hp: 16,
     shieldEnemyAt1Hp: 40,
     shieldEnemyAt2Hp: 14,
@@ -300,7 +309,12 @@
     splitGiftFizzle: 12,
 
     // —— 召唤
-    summonBase: 105,
+    // 替身不再复活之后，它就是一块纯粹的“一次性挡箭牌”：
+    // 顶在前面替本体扛自伤、也吃掉对手打向替身组的群体攻击。
+    // 实测（scripts/ai-sweep-tune.cjs，1000 局同一批种子）：
+    // 召唤权重 105→145 加上“替身在本体 3 血时就顶前面”，双人局胜率 64.5% → 76.8%；
+    // 召唤权重低于 140 时 AI 会优先去收割 1 血对手，反而丢掉挡箭牌（69.0%）。
+    summonBase: 145,
     summonEnemyNoStandin: 0,
 
     // —— 结构性参数
@@ -311,7 +325,14 @@
     /** 本体只剩 1 血时，其他技能（护盾除外）的额外扣分：这一回合自伤就是致命 */
     lowHpSkillPenalty: -80,
     /** 本体血量低于等于这个值时，改为让替身行动（替身扛自伤，本体不至于被打死） */
-    standinActorHp: 2,
+    standinActorHp: 3,
+    /**
+     * 替身上场阈值用哪种口径：
+     *   0 = 绝对值（本体血量 ≤ standinActorHp）
+     *   1 = 相对值（本体没满血就让替身上，即上限 - 1）
+     * 相对值能保证本体满血时一定自己出手，避免退化成“本体只召唤、替身只输出”。
+     */
+    standinActorRelative: 0,
 
     // —— 硬币策略开关（0 / 1）
     /** 自己普攻失败时，只要不是致死也用幸运币救 */
@@ -332,6 +353,8 @@
     if (!player) return null;
 
     const opponents = typeof game.othersOf === 'function' ? game.othersOf(playerIdx) : [];
+    // 已经退场的玩家不再构成威胁：退场时替身也会一并消散
+    const aliveOpponents = opponents.filter((opponent) => opponent.body && opponent.body.alive);
     const enemies = enemiesOf(game, playerIdx);
     const bodies = enemies.filter((entity) => !entity.isStandin);
     const standins = enemies.filter((entity) => entity.isStandin);
@@ -349,6 +372,7 @@
       player,
       playerIdx,
       opponents,
+      aliveOpponents,
       enemies,
       bodies,
       standins,
@@ -366,13 +390,13 @@
       enemyHetero: enemies.some((entity) => entity.hetero),
       // 对方技能槽满了 → 我的技能判定失败时技能会直接落空（不白送）
       enemySlotsFull:
-        opponents.length > 0 &&
-        opponents.every((opponent) => opponent.body && opponent.body.slots.length >= opponent.body.slotCap),
+        aliveOpponents.length > 0 &&
+        aliveOpponents.every((opponent) => opponent.body && opponent.body.slots.length >= opponent.body.slotCap),
       // 对方没有替身 → 我方替身行动失败时技能会落空
-      enemyHasStandin: opponents.some((opponent) => opponent.standin && opponent.standin.alive),
+      enemyHasStandin: aliveOpponents.some((opponent) => opponent.standin && opponent.standin.alive),
       enemyStealable: enemies.some(hasStealable),
-      /** 对手数量：人越多每回合挨打越密，防御类技能越值钱 */
-      threat: Math.max(1, opponents.length),
+      /** 对手数量：人越多每回合挨打越密，防御类技能越值钱（已退场的玩家不计入） */
+      threat: Math.max(1, aliveOpponents.length),
       turn: game.turn
     };
   }
@@ -410,7 +434,7 @@
           ? HARD_SCORE.HIT_STANDIN * HARD_TUNE.standinValueScale
           : HARD_SCORE.HIT_BODY;
         if (entity.hp <= 1 + sharpen) {
-          // 打空之后还有一次复活判定，但这一下已经把它逼到生死线上
+          // 本体打空之后还有一次复活判定，替身打空就直接没了
           score += entity.isStandin
             ? HARD_SCORE.KILL_STANDIN * HARD_TUNE.standinValueScale
             : HARD_SCORE.KILL_BODY;
@@ -608,10 +632,12 @@
     }
 
     // —— 召唤：多一个 1 血替身。
-    // 这一项在进阶 AI 里权重很高，因为它同时解决两件事：
+    // 替身不再复活之后，它就是一块纯粹的一次性挡箭牌，这一项在进阶 AI 里权重很高：
     //   1) 替身顶在前面替本体扛自伤（普攻失败的反噬打在替身上，本体就安全）；
-    //   2) 替身在场时，对手打向“全体对手替身”的群体攻击大多打在替身上。
-    // 实测这一条把双人局胜率从 50% 拉到 58%。
+    //   2) 替身在场时，对手打向“全体对手替身”的群体攻击大多打在替身上；
+    //   3) 本体血量偏低时改由替身出手，让一次性单位去承担失败普攻的风险。
+    // 实测（scripts/ai-sweep-tune.cjs，1000 局同一批种子）：召唤权重 105→145
+    // 加上“替身在本体 3 血时就顶前面”，双人局胜率 64.5% → 78.8%。
     {
       let score = HARD_TUNE.summonBase;
       let why = '召唤一个替身：它能替本体扛自伤，也能吃掉对手打向替身组的群体攻击';

@@ -65,9 +65,19 @@ test('难度 2：对方本体只剩 1 血时直接普攻收割，不防御', () 
   const actor = body(game, 0);
   actor.hp = 3;
   body(game, 1).hp = 1;
+  game.summonStandin(body(game, 0)); // 已有替身 → 召唤不可用，只能赌这一刀
 
   const action = AI.chooseAction(game, 0, () => 0.99, HARD);
   assert.equal(action.skillId, 0, '1 血本体是胜负手，应该赌这一刀');
+});
+
+test('难度 2：没有替身时先召唤，让替身去赌那一刀，本体不冒险', () => {
+  const game = makeGame();
+  body(game, 0).hp = 3;
+  body(game, 1).hp = 1;
+
+  const action = AI.chooseAction(game, 0, () => 0.99, HARD);
+  assert.equal(action.skillId, 9, '先召唤替身当缓冲，下一手由替身去收割');
 });
 
 test('难度 2：本体只剩 1 点时优先保命，不会硬打', () => {

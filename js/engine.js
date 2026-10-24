@@ -91,7 +91,7 @@
       id: 9, key: 'summon', name: '召唤', icon: '⊕', accent: '#6fe3d2',
       slot: true, target: 'self',
       short: '召唤 1 HP、2 技能槽的替身。',
-      desc: '召唤一个生命值为 1 的替身。替身拥有独立的 2 个技能槽和独立效果，可以行动、被选为目标并进行复活判定。每位玩家同时只能拥有一个替身。'
+      desc: '召唤一个生命值为 1 的替身。替身拥有独立的 2 个技能槽和独立效果，可以行动、被选为目标。替身被打空就直接消失，不再进行复活判定；本体退场或本体复活时，替身也会一并消散。每位玩家同时只能拥有一个替身。'
     },
     {
       id: 10, key: 'hetero', name: '异质', icon: '×', accent: '#ff6b6b',
@@ -220,6 +220,7 @@
       this.started = false;
       this.logs = [];
       this.stats = [];
+      this.eliminationOrder = [];
       this._logId = 0;
     }
 
@@ -247,6 +248,7 @@
       this.started = true;
       this.logs = [];
       this._logId = 0;
+      this.eliminationOrder = [];
       this.stats = this.players.map(() => ({
         damageDealt: 0,
         damageTaken: 0,
@@ -257,7 +259,13 @@
         revives: 0,
         coins: 0,
         steals: 0,
-        summons: 0
+        summons: 0,
+        /** 退场发生在第几个回合；还活着 / 平局时为 null */
+        eliminatedTurn: null,
+        /** 在场上待了多少个回合（战报里的“存活回合”） */
+        survivedTurns: 0,
+        /** 最终名次；平局时为 null */
+        rank: null
       }));
 
       this.log(`杀币战争开始：${this.players[this.current].name} 获得先手`, 'system');
@@ -290,9 +298,40 @@
       return this.players.length > MIN_PLAYERS;
     }
 
-    /** 本体生命值上限＝人数 + 1；开局前退回双人局的 3 点 */
+    /**
+     * 本体生命值上限＝**当前存活人数 + 1**。
+     * 有人退场时上限跟着下调（否则多人局很难结束）：
+     * 4 人局 5 点 → 退场一人变 4 点 → 再退场变 3 点。
+     * 双人局始终是 3 点，不受这条影响。
+     */
     bodyMaxHp() {
-      return this.bodyMax || BODY_MAX_HP;
+      if (!this.started) return this.bodyMax || BODY_MAX_HP;
+      const alive = this.alivePlayers().length;
+      if (!alive) return this.bodyMax || BODY_MAX_HP;
+      return bodyMaxHpFor(alive);
+    }
+
+    /**
+     * 有玩家退场后，把剩余玩家的本体生命值上限调到新的水平，
+     * 当前生命值超出新上限的部分直接削掉（不算伤害，只是不再有多余的血）。
+     * 拆分中的实体保持 1 点上限不变，等拆分解除时会自动用新的上限恢复。
+     */
+    syncMaxHp() {
+      if (!this.started || this.over) return;
+      const target = bodyMaxHpFor(this.alivePlayers().length);
+      const touched = [];
+      for (const player of this.players) {
+        const body = player.body;
+        if (!body || !body.alive || body.hp <= 0) continue;
+        if (body.split) continue; // 拆分中每个阶段上限固定是 1
+        if (body.maxHp === target) continue;
+        body.maxHp = target;
+        if (body.hp > target) body.hp = target;
+        touched.push(`${body.name} ${body.hp}/${body.maxHp}`);
+      }
+      if (touched.length) {
+        this.log(`场上人数减少，剩余玩家的生命值上限调整为 ${target}：${touched.join('、')}`, 'system');
+      }
     }
 
     /** 除了该玩家以外的全体玩家；双人模式下就是唯一的对手 */
@@ -571,9 +610,13 @@
       this.log(`${actor.name} 的【普通攻击】攻击${option.label}：${targets.map((entity) => entity.name).join('、')}`, 'attack');
 
       for (let i = 0; i < targets.length; i += 1) {
-        if (this.over || !targets[i].alive) continue;
+        const target = targets[i];
+        if (this.over || !target.alive) continue;
+        // 目标的主人已经退场就不再结算（退场会连带清掉替身，这里只是兜底）
+        const owner = this.players[target.owner];
+        if (!owner || !owner.body || !owner.body.alive) continue;
         if (i > 0) await this.beat(260);
-        await this.damage(actor, targets[i], 1, {});
+        await this.damage(actor, target, 1, {});
       }
     }
 
@@ -647,12 +690,21 @@
       });
     }
 
+    /**
+     * 恢复本体的生命值上限（随存活人数动态变化），并保证当前生命值不超过上限。
+     * 拆分解除时剩余阶段数可能超过新的上限，这时要削到上限。
+     */
+    applyBodyMaxHp(entity, hp) {
+      entity.maxHp = this.bodyMaxHp();
+      entity.hp = Math.max(1, Math.min(hp, entity.maxHp));
+      return entity.hp;
+    }
+
     toggleSplit(entity) {
       if (entity.split) {
         const remaining = entity.split.remaining;
         entity.split = null;
-        entity.maxHp = entity.isStandin ? STANDIN_MAX_HP : this.bodyMaxHp();
-        entity.hp = Math.max(1, remaining);
+        this.applyBodyMaxHp(entity, remaining);
         this.log(`${entity.name} 解除拆分，生命值重置为 ${entity.hp}/${entity.maxHp}`, 'effect');
         return;
       }
@@ -948,6 +1000,11 @@
 
       if (target.hp <= 0 && target.alive) {
         await this.handleDepleted(target);
+        // 兜底：复活流程异常中断时，不能留下“还活着但血量为 0”的实体
+        if (target.hp <= 0 && target.alive) {
+          target._dying = false;
+          await this.eliminate(target);
+        }
       }
 
       // 小偷在伤害结算后触发：护盾/反甲等先结算，再偷取剩余效果
@@ -1026,8 +1083,7 @@
           break;
         case 'split': {
           entity.split = null;
-          entity.maxHp = entity.isStandin ? STANDIN_MAX_HP : this.bodyMaxHp();
-          entity.hp = Math.max(1, data.remaining);
+          this.applyBodyMaxHp(entity, data.remaining);
           this.log(`${entity.name} 的拆分被解除，生命值变为 ${entity.hp}/${entity.maxHp}`, 'effect');
           break;
         }
@@ -1067,8 +1123,7 @@
           if (entity.split) {
             const remaining = entity.split.remaining;
             entity.split = null;
-            entity.maxHp = entity.isStandin ? STANDIN_MAX_HP : this.bodyMaxHp();
-            entity.hp = Math.max(1, remaining);
+            this.applyBodyMaxHp(entity, remaining);
             this.log(`${entity.name} 已处于拆分状态，再次获得拆分时解除拆分`, 'effect');
           } else {
             entity.split = { total: data.total, remaining: data.remaining };
@@ -1136,6 +1191,13 @@
       entity._dying = true;
 
       try {
+        // 替身只有 1 点生命，被打空就直接消失：不进行复活判定，也不做负生命惩罚判定。
+        // （平衡性调整：替身是纯粹的“一次性挡箭牌”，不再自带第二次生命。）
+        if (entity.isStandin) {
+          await this.eliminate(entity);
+          return;
+        }
+
         const penalty = Math.max(0, -entity.hp);
         for (let i = 1; i <= penalty; i += 1) {
           const ok = await this.rollCheck(entity, `负生命惩罚判定 ${i}/${penalty}`);
@@ -1188,7 +1250,7 @@
       if (stats) stats.revives += 1;
       entity.maxHp = entity.isStandin ? STANDIN_MAX_HP : this.bodyMaxHp();
       const splitRemaining = opts.splitRemaining;
-      entity.hp = splitRemaining != null ? Math.max(1, splitRemaining) : entity.maxHp;
+      entity.hp = splitRemaining != null ? Math.max(1, Math.min(splitRemaining, entity.maxHp)) : entity.maxHp;
       this.clearEffects(entity);
       entity.slots = [];
 
@@ -1198,7 +1260,32 @@
         this.log(`${entity.name} 复活：生命值回满，清除所有效果并释放技能槽`, 'revive');
       }
 
+      // 本体复活时替身一并消散：不允许同时拥有满血本体和替身。
+      if (!entity.isStandin) {
+        this.removeStandin(this.players[entity.owner], '随本体复活一同消散', 'effect');
+      }
+
       await this.beat(500);
+    }
+
+    /**
+     * 清掉某位玩家的替身。
+     * 替身是本体的附属单位：本退场或本体复活时都要一起清掉，
+     * 否则已退场玩家的替身会继续留在“全体对手替身”组里被攻击、判定、复活，
+     * 群体伤害的结算就会算到已经退场的人头上。
+     */
+    removeStandin(owner, reason, type = 'effect') {
+      const standin = owner && owner.standin;
+      if (!standin) return false;
+      owner.standin = null;
+      if (standin.alive) {
+        standin.alive = false;
+        standin.hp = 0;
+        standin.slots = [];
+        this.clearEffects(standin);
+      }
+      this.log(`${standin.name} ${reason}`, type);
+      return true;
     }
 
     clearEffects(entity) {
@@ -1228,12 +1315,18 @@
         return;
       }
 
+      // 本体出局：替身随之消散（已退场的玩家不该再留在任何目标组里）
+      this.removeStandin(owner, '随本体退场一同消散', 'death');
+
       // 本体出局：多人模式下只是退场，场上只剩一人时才结束战斗
       const survivors = this.alivePlayers();
       this.log(`${owner.name} 的生命值耗尽且复活失败，${this.isMultiplayer() ? '退场' : '战斗结束'}！`, 'death');
+      this.recordElimination(entity.owner);
 
       if (survivors.length > 1) {
         this.log(`场上还剩 ${survivors.length} 人：${survivors.map((player) => player.name).join('、')}`, 'system');
+        // 人数减少 → 剩余玩家的生命值上限下调（否则多人局很难结束）
+        this.syncMaxHp();
         this.emitChanged();
         return;
       }
@@ -1241,6 +1334,7 @@
       this.over = true;
       // 反甲连锁可能同时带走最后两人，此时判平局
       this.winner = survivors.length === 1 ? survivors[0].index : null;
+      this.finalizeStats();
       if (this.winner === null) {
         this.log('无人存活，本局平局', 'system');
         this.io.onGameOver({ winner: null, winnerName: null, draw: true });
@@ -1252,6 +1346,65 @@
         });
       }
       this.emitChanged();
+    }
+
+    /** 记录退场信息（战报里的“退场顺序 / 存活回合 / 最终排名”都靠它） */
+    recordElimination(playerIdx) {
+      const stats = this.stats[playerIdx];
+      if (stats) {
+        stats.eliminatedTurn = this.turn;
+        stats.survivedTurns = this.turn;
+      }
+      const player = this.players[playerIdx];
+      if (player) this.eliminationOrder.push({ index: playerIdx, name: player.name, turn: this.turn });
+    }
+
+    /** 战斗结束时把还在场上的玩家补齐统计 */
+    finalizeStats() {
+      for (const player of this.players) {
+        const stats = this.stats[player.index];
+        if (!stats) continue;
+        if (stats.eliminatedTurn == null) stats.survivedTurns = this.turn;
+      }
+      for (const row of this.finalRanking()) {
+        const stats = this.stats[row.index];
+        if (stats) stats.rank = row.rank;
+      }
+    }
+
+    /**
+     * 最终排名：胜者第一；其余按“在场上待得更久”排序（最后退场的排在前面）。
+     * 平局（全员阵亡）时不排名，用 draw 标记。
+     * @returns {Array<{index:number,name:string,rank:number|null,survivedTurns:number,eliminatedTurn:number|null,alive:boolean}>}
+     */
+    finalRanking() {
+      const elimOrder = new Map(this.eliminationOrder.map((item, i) => [item.index, i]));
+      const rows = this.players.map((player) => {
+        const stats = this.stats[player.index] || {};
+        return {
+          index: player.index,
+          name: player.name,
+          survivedTurns: stats.survivedTurns || 0,
+          eliminatedTurn: stats.eliminatedTurn == null ? null : stats.eliminatedTurn,
+          alive: Boolean(player.body && player.body.alive)
+        };
+      });
+
+      const draw = this.over && this.winner == null;
+      rows.sort((a, b) => {
+        if (a.index === this.winner) return -1;
+        if (b.index === this.winner) return 1;
+        if (a.survivedTurns !== b.survivedTurns) return b.survivedTurns - a.survivedTurns;
+        const ea = elimOrder.has(a.index) ? elimOrder.get(a.index) : -1;
+        const eb = elimOrder.has(b.index) ? elimOrder.get(b.index) : -1;
+        if (ea !== eb) return eb - ea; // 后退场的排前面
+        return a.index - b.index;
+      });
+
+      rows.forEach((row, i) => {
+        row.rank = draw ? null : i + 1;
+      });
+      return rows;
     }
 
     // ---------------------------------------------------------- 回合

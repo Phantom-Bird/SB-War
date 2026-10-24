@@ -86,9 +86,9 @@ test('“对方”＝其他所有玩家：普通攻击分为“全体对手本�
   assert.deepEqual(game.enemiesOf(2).map((e) => e.id), ['p0', 'p1']);
 });
 
-test('选择“全体对手替身”时，组内每个替身都受到伤害', async () => {
+test('选择“全体对手替身”时，组内每个替身都受到伤害（替身不再复活）', async () => {
   const game = makeGame({
-    values: [0.9, 0.9, 0.1],
+    values: [0.9],
     io: {
       chooseTarget: async ({ options }) => {
         const standins = options.find((option) => option.kind === 'standin');
@@ -102,13 +102,13 @@ test('选择“全体对手替身”时，组内每个替身都受到伤害', as
   await game.act(0, 'p0', 0);
 
   // 两名替身都进入复活判定：乙的复活成功，丙的复活失败被击破
-  assert.ok(game.players[1].standin, '复活成功的替身保留');
-  assert.equal(game.players[1].standin.hp, 1);
-  assert.equal(game.players[2].standin, null, '复活失败的替身被击破');
+  assert.equal(game.players[1].standin, null, '乙的替身被打掉');
+  assert.equal(game.players[2].standin, null, '丙的替身被打掉');
   assert.equal(game.players[1].body.hp, game.bodyMaxHp(), '本体不受替身组影响');
   assert.equal(game.players[2].body.hp, game.bodyMaxHp());
   assert.equal(game.over, false);
-  assert.match(texts(game), /攻击全体对手替身：乙的替身、丙的替身/);
+  assert.match(texts(game), /攻击全体对手替身/);
+  assert.doesNotMatch(texts(game), /复活判定/);
 });
 
 test('没有替身时只提供本体组，不再弹目标选择', async () => {

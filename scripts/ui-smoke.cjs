@@ -611,6 +611,41 @@ async function main() {
     assert(bodyHp[1] === 4 && bodyHp[2] === 4 && bodyHp[3] === 4, `攻击全体本体应让每名对手各掉 1 点：${JSON.stringify(bodyHp)}`);
     assert(bodyHp[0] === 5, '四人局本体生命上限应为 5');
 
+    // 14.5 多人模式：群体攻击里第一个目标复活失败，后面的目标仍要如实结算
+    await evaluate(`
+      (() => {
+        window.SBWarUI.start(['甲', '乙', '丙'], { firstPlayer: 0 });
+        const g = window.SBWarUI.getGame();
+        const seq = [0.9, 0.1];
+        g.rng = () => (seq.length ? seq.shift() : 0.9);
+        g.players[1].body.hp = 1;
+        g.summonStandin(g.players[1].body);
+        window.SBWarUI.render();
+        document.querySelector('[data-skill="0"]').click();
+        return true;
+      })()
+    `);
+    await waitUntil("!document.getElementById('targetOverlay').classList.contains('hidden')", 6000);
+    await evaluate("document.querySelector('[data-target=\"bodies\"]').click();");
+    await waitUntil('window.SBWarUI.getGame().turn === 2 && !window.SBWarUI.getGame().busy', 9000);
+    const groupState = await evaluate(`(() => {
+      const g = window.SBWarUI.getGame();
+      return {
+        bAlive: g.players[1].body.alive,
+        bStandin: g.players[1].standin,
+        cHp: g.players[2].body.hp,
+        cMax: g.players[2].body.maxHp,
+        over: g.over,
+        current: g.current
+      };
+    })()`);
+    assert(groupState.bAlive === false, '乙的本体应退场');
+    assert(groupState.bStandin === null, '乙退场后替身应一并消散，不再留在目标组里');
+    assert(groupState.cHp === groupState.cMax - 1, `丙应如实掉 1 点血：${groupState.cHp}/${groupState.cMax}`);
+    assert(groupState.over === false, '战斗应继续');
+    assert(groupState.current === 2, '回合应交给丙');
+    await screenshot('14b-group-damage.png');
+
     // 15. 多人模式：多枚硬币由多位玩家分别确认
     await evaluate(`
       (() => {
@@ -664,6 +699,17 @@ async function main() {
     assert((await evaluate("document.querySelectorAll('#victoryReport .report-col').length")) === 3, '战报应展示每位玩家');
     assert(battleReport.includes('胜者'), '战报应标出胜者');
     assert(battleReport.includes('退场'), '战报应标出已退场的玩家');
+    assert(battleReport.includes('最终排名'), '战报应包含最终排名');
+    assert(battleReport.includes('存活回合'), '战报应包含存活回合');
+    const rankRows = await evaluate(`(() => Array.from(document.querySelectorAll('#victoryReport .rank-row')).map((row) => ({
+      no: row.querySelector('.rank-no').textContent.trim(),
+      name: row.querySelector('.rank-name').textContent.trim(),
+      note: row.querySelector('.rank-note').textContent.trim()
+    })))()`);
+    assert(rankRows.length === 3, `战报应按名次列出 3 位玩家：${rankRows.length}`);
+    assert(rankRows[0].name === '甲' && rankRows[0].no === '1', `胜者应排第一：${JSON.stringify(rankRows)}`);
+    assert(rankRows[0].note.includes('坚持到最终'), '胜者应坚持到最终');
+    assert(rankRows[2].note.includes('退场'), '最后一名应标出退场回合');
     await screenshot('17-multiplayer-report.png');
 
     // 17.5 多人战报排版：弹窗要更宽、每列要够宽，避免“造成伤害 12”错误换行

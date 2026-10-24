@@ -330,7 +330,7 @@
           <div class="ai-orb">AI</div>
           <p class="eyebrow">AI TURN</p>
           <h2 class="ai-title">${esc(playerName(game.current))} 正在${game.busy ? '结算' : '思考'}…</h2>
-          <p class="ai-desc">${hard ? '难度 2 · 进阶电脑：以输出为主，几乎每回合都在普攻，优先集火对方本体。' : '难度 1 · 简单电脑：按固定优先级试探。'}${hard && aiReason ? `判断：${esc(aiReason)}。` : '电脑会参考场上所有玩家的生命、效果和技能槽。'}</p>
+          <p class="ai-desc">${hard ? '难度 2 · 进阶电脑：普攻与召唤轮着用，始终把替身顶在前面当挡箭牌，只集火对方本体。' : '难度 1 · 简单电脑：按固定优先级试探。'}${hard && aiReason ? `判断：${esc(aiReason)}。` : '电脑会参考场上所有玩家的生命、效果和技能槽。'}</p>
           <div class="ai-thinking" aria-hidden="true"><span></span><span></span><span></span></div>
         </div>
       `;
@@ -1041,9 +1041,17 @@
 
   function victoryReportHTML() {
     const stats = game.stats || [];
+    const ranking = typeof game.finalRanking === 'function' ? game.finalRanking() : [];
+    const rankOf = new Map(ranking.map((row) => [row.index, row]));
+    const draw = game.winner === null || game.winner === undefined;
+
     const columns = game.players.map((player, index) => {
       const s = stats[index] || {};
       const body = player.body;
+      const row = rankOf.get(index) || null;
+      const rankText = !row ? '—' : row.rank == null ? '平局' : `第 ${row.rank} 名`;
+      const survived = s.survivedTurns || 0;
+      const survivedText = survived > 0 ? `${survived} 回合` : '—';
       const rows = [
         ['造成伤害', s.damageDealt || 0],
         ['受到伤害', s.damageTaken || 0],
@@ -1054,7 +1062,9 @@
         ['使用硬币', s.coins || 0],
         ['偷取效果', s.steals || 0],
         ['召唤替身', s.summons || 0],
-        ['最终生命', `${Math.max(0, body.hp)} / ${body.maxHp}`]
+        ['最终生命', `${Math.max(0, body.hp)} / ${body.maxHp}`],
+        ['最终排名', rankText],
+        ['存活回合', survivedText]
       ];
       const result = index === game.winner ? '胜者' : body.alive ? (game.isMultiplayer() ? '存活' : '败者') : '退场';
       return `<div class="report-col p${index}">
@@ -1068,6 +1078,29 @@
       </div>`;
     });
 
+    // 最终排名：胜者第一，其余按“在场上待得更久”排序
+    const rankList = ranking.length
+      ? `<ol class="report-rank-list">
+          ${ranking
+            .map((row, i) => {
+              const note = row.eliminatedTurn == null
+                ? `存活 ${row.survivedTurns} 回合 · 坚持到最终`
+                : `存活 ${row.survivedTurns} 回合 · 第 ${row.eliminatedTurn} 回合退场`;
+              const no = row.rank == null ? '—' : String(row.rank);
+              const top = i === 0 && !draw ? ' is-top' : '';
+              return `<li class="rank-row${top}">
+                <span class="rank-no">${no}</span>
+                <span class="rank-name">${esc(row.name)}</span>
+                <span class="rank-note">${esc(note)}</span>
+              </li>`;
+            })
+            .join('')}
+        </ol>`
+      : '';
+
+    const order = (game.eliminationOrder || []).map((item) => item.name);
+    const orderNote = order.length ? `退场顺序：${order.join(' → ')}` : '无人退场';
+
     const recent = game.logs
       .slice(-10)
       .map((entry) => `<div class="report-log-line ${entry.type}">${esc(entry.text)}</div>`)
@@ -1075,6 +1108,10 @@
 
     return `
       <div class="report-head"><span>战报</span><small>共 ${game.turn} 回合</small></div>
+      <div class="report-rank">
+        <div class="report-rank-head"><span>最终排名</span><small>${esc(orderNote)}</small></div>
+        ${rankList}
+      </div>
       <div class="report-grid ${game.isMultiplayer() ? 'is-battle' : ''}">${columns.join('')}</div>
       <div class="report-recent">
         <div class="report-recent-title">最后记录</div>
@@ -1295,7 +1332,7 @@
     if (el.difficultyHint) {
       el.difficultyHint.textContent =
         aiLevel === DIFFICULTY.HARD
-          ? '进阶：几乎每回合都在普攻并集火对方本体，用替身当缓冲、破盾用异质，硬币只花在关键判定上。'
+          ? '进阶：普攻与召唤轮着用，始终把替身顶在前面当挡箭牌、只集火对方本体，破盾用异质，硬币只花在关键判定上。'
           : '简单：靠固定优先级加概率试探，容易浪费技能和硬币。';
     }
     try {

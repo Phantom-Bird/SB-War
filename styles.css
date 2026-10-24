@@ -2223,6 +2223,92 @@ input:focus-visible {
   letter-spacing: 0.08em;
 }
 
+/* 最终排名：多人局按名次排布，附带存活回合与退场回合 */
+.report-rank {
+  margin: 0 0 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.report-rank-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+}
+
+.report-rank-head span {
+  color: var(--gold-soft);
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+}
+
+.report-rank-head small {
+  color: var(--muted-2);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+}
+
+.report-rank-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+
+.rank-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 7px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.rank-row.is-top {
+  background: rgba(232, 180, 90, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(232, 180, 90, 0.22);
+}
+
+.rank-no {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.rank-row.is-top .rank-no {
+  background: rgba(232, 180, 90, 0.2);
+  color: var(--gold-soft);
+}
+
+.rank-name {
+  flex: 0 0 auto;
+  min-width: 3.2em;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 13px;
+}
+
+.rank-note {
+  flex: 1 1 auto;
+  color: var(--muted-2);
+  font-size: 10px;
+  text-align: right;
+}
+
 .report-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

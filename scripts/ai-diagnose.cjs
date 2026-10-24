@@ -12,6 +12,18 @@ const ROUNDS = Number(process.argv[2] || 200);
 const PLAYERS = Number(process.argv[3] || 2);
 const SKILL_NAMES = ['普攻', '磨刀', '护盾', '拆分', '韧性', '反甲', '幸运', '诅咒', '小偷', '召唤', '异质'];
 
+/** 允许用环境变量临时改参数：SB_TUNE="summonBase=145,standinActorHp=3" */
+function applyTuneOverride() {
+  const raw = process.env.SB_TUNE;
+  if (!raw) return;
+  for (const pair of raw.split(',')) {
+    const [key, value] = pair.split('=');
+    if (!key) continue;
+    const num = Number(value);
+    if (Number.isFinite(num)) AI.HARD_TUNE[key.trim()] = num;
+  }
+}
+
 function makeStats() {
   return {
     skills: new Array(11).fill(0),
@@ -21,7 +33,9 @@ function makeStats() {
     coins: 0,
     wins: 0,
     turns: 0,
-    hpLeft: 0
+    hpLeft: 0,
+    bodyActions: 0,
+    standinActions: 0
   };
 }
 
@@ -80,6 +94,8 @@ async function simulate(levels, seed) {
     if (!action) await game.pass(idx);
     else {
       stats[idx].skills[action.skillId] += 1;
+      if (action.actorId.endsWith('s')) stats[idx].standinActions += 1;
+      else stats[idx].bodyActions += 1;
       const ok = await game.act(idx, action.actorId, action.skillId);
       if (!ok && !game.over) await game.pass(idx);
     }
@@ -106,13 +122,14 @@ function describe(name, s) {
   return (
     `${name}: 胜 ${s.wins}  回合 ${s.turns}  造成伤害 ${s.damageDealt}  受到伤害 ${s.damageTaken}  ` +
     `复活 ${s.revives}  用币 ${s.coins}  伤害/回合 ${(s.damageDealt / turns).toFixed(2)}  ` +
-    `存活血量 ${(s.hpLeft / turns).toFixed(2)}\n    技能: ${skillText || '（无）'}`
+    `存活血量 ${(s.hpLeft / turns).toFixed(2)}\n    出手: 本体 ${s.bodyActions} / 替身 ${s.standinActions}\n    技能: ${skillText || '（无）'}`
   );
 }
 
 (async () => {
   const EASY = AI.DIFFICULTY.EASY;
   const HARD = AI.DIFFICULTY.HARD;
+  applyTuneOverride();
 
   const totals = [];
   for (let i = 0; i < PLAYERS; i += 1) totals.push(makeStats());
@@ -131,6 +148,8 @@ function describe(name, s) {
       totals[p].wins += result[p].wins;
       totals[p].turns += result[p].turns;
       totals[p].hpLeft += result[p].hpLeft;
+      totals[p].bodyActions += result[p].bodyActions;
+      totals[p].standinActions += result[p].standinActions;
     }
   }
 
