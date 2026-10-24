@@ -69,8 +69,7 @@
     index,
     row: document.querySelector(`.setup-row[data-row="${index}"]`),
     name: $(`name${index}`),
-    ai: $(`ai${index}`),
-    escrow: $(`escrow${index}`)
+    ai: $(`ai${index}`)
   }));
   // 硬币确认按钮：coinConfirm0..3（多人时全部参与确认）
   const coinConfirms = Array.from({ length: MAX_PLAYERS }, (_, index) => $(`coinConfirm${index}`));
@@ -276,6 +275,15 @@
       : '点击开启托管：幸运币/诅咒币由规则自动决定，不再手动确认';
     return `<button class="escrow-toggle ${on ? 'is-on' : ''}" type="button" data-escrow="${index}"
       aria-pressed="${on ? 'true' : 'false'}" title="${title}" ${disabled ? 'disabled' : ''}>托管</button>`;
+  }
+
+  /** 把托管状态写进本地存储（刷新后仍记得） */
+  function persistEscrow() {
+    try {
+      window.localStorage.setItem('sbwar.escrow', JSON.stringify(Array.from(escrowPlayers)));
+    } catch (error) {
+      /* 忽略隐私模式下的存储错误 */
+    }
   }
 
   function panelHTML(player, index) {
@@ -980,19 +988,15 @@
     }
     aiPlayers = nextAI;
 
-    // 硬币托管：每个席位都能开（对局内也能随时切换）
+    // 硬币托管：开局设置里没有开关，唯一入口是对局内面板头部的按钮，
+    // 所以新一局沿用当前状态（调用方显式传入 escrowCoins 时以传入的为准）
     const nextEscrow = new Set();
-    if (Array.isArray(options.escrowCoins)) {
-      options.escrowCoins.forEach((index) => {
-        if (Number.isInteger(index) && index >= 0 && index < seatCount) nextEscrow.add(index);
-      });
-    } else {
-      seats.forEach((seat) => {
-        if (seat.index < seatCount && seat.escrow && seat.escrow.checked) {
-          nextEscrow.add(seat.index);
-        }
-      });
-    }
+    const escrowSource = Array.isArray(options.escrowCoins)
+      ? options.escrowCoins
+      : Array.from(escrowPlayers);
+    escrowSource.forEach((index) => {
+      if (Number.isInteger(index) && index >= 0 && index < seatCount) nextEscrow.add(index);
+    });
     escrowPlayers = nextEscrow;
 
     // 难度：优先用调用方传入的，其次读设置界面
@@ -1004,7 +1008,7 @@
     try {
       window.localStorage.setItem('sbwar.names', JSON.stringify(savedNames));
       window.localStorage.setItem('sbwar.seats', JSON.stringify(Array.from(aiPlayers)));
-      window.localStorage.setItem('sbwar.escrow', JSON.stringify(Array.from(escrowPlayers)));
+      persistEscrow();
     } catch (error) {
       /* 忽略隐私模式下的存储错误 */
     }
@@ -1091,7 +1095,6 @@
     seats.forEach((seat) => {
       seat.name.value = savedNames[seat.index] || seatLabel(seat.index);
       seat.ai.checked = aiPlayers.has(seat.index);
-      seat.escrow.checked = escrowPlayers.has(seat.index);
     });
     render();
     window.setTimeout(() => seats[0].name.focus({ preventScroll: true }), 60);
@@ -1384,14 +1387,12 @@
   function currentSeatConfig() {
     const names = [];
     const aiPlayerIndexes = [];
-    const escrowCoins = [];
     for (let index = 0; index < seatCount; index += 1) {
       const seat = seats[index];
       names.push(seat.name.value.trim() || seatLabel(index));
       if (seat.ai.checked) aiPlayerIndexes.push(index);
-      if (seat.escrow && seat.escrow.checked) escrowCoins.push(index);
     }
-    return { names, aiPlayerIndexes, escrowCoins };
+    return { names, aiPlayerIndexes };
   }
 
   /** 至少勾了一个电脑时才显示难度选择 */
@@ -1423,8 +1424,8 @@
 
   function bindEvents() {
     el.startBtn.addEventListener('click', () => {
-      const { names, aiPlayerIndexes, escrowCoins } = currentSeatConfig();
-      startGame(names, { aiPlayerIndexes, escrowCoins, difficulty: aiLevel });
+      const { names, aiPlayerIndexes } = currentSeatConfig();
+      startGame(names, { aiPlayerIndexes, difficulty: aiLevel });
     });
 
     seats.forEach((seat) => {
@@ -1452,7 +1453,11 @@
         if (!button || !game || game.over) return;
         const index = Number(button.getAttribute('data-escrow'));
         if (!Number.isInteger(index) || !game.players[index]) return;
-        game.setCoinEscrow(index, !game.isEscrowed(index));
+        const on = game.setCoinEscrow(index, !game.isEscrowed(index));
+        // 记住当前状态：重开一局时沿用
+        if (on) escrowPlayers.add(index);
+        else escrowPlayers.delete(index);
+        persistEscrow();
       });
     });
 
@@ -1541,7 +1546,7 @@
       const escrowStored = JSON.parse(window.localStorage.getItem('sbwar.escrow') || 'null');
       if (Array.isArray(escrowStored)) {
         escrowStored.forEach((index) => {
-          if (seats[index] && seats[index].escrow) seats[index].escrow.checked = true;
+          if (Number.isInteger(index) && index >= 0 && index < MAX_PLAYERS) escrowPlayers.add(index);
         });
       }
     } catch (error) {

@@ -231,29 +231,17 @@ async function main() {
       '取消电脑后应重新隐藏难度选择'
     );
 
-    // 0.7 硬币托管：可选开关（默认关闭），任何席位都能勾选
-    const escrowUi = await evaluate(`(() => {
-      const escrow0 = document.getElementById('escrow0');
-      const escrow2 = document.getElementById('escrow2');
-      const before = escrow0.checked;
-      document.querySelector('.setup-row[data-row="0"] .setup-seat[for="escrow0"]').click();
-      const after = escrow0.checked;
-      // 电脑席位同样可以托管
-      document.querySelector('.setup-row[data-row="2"] .setup-seat[for="ai2"]').click();
-      const aiDisabled = escrow2.disabled;
-      document.querySelector('.setup-row[data-row="2"] .setup-seat[for="escrow2"]').click();
-      const aiCanEscrow = escrow2.checked;
-      document.querySelector('.setup-row[data-row="2"] .setup-seat[for="escrow2"]').click();
-      const aiStillOff = !escrow2.checked;
-      document.querySelector('.setup-row[data-row="2"] .setup-seat[for="ai2"]').click();
-      return { before, after, aiDisabled, aiCanEscrow, aiStillOff };
-    })()`);
-    assert(escrowUi.before === false, '托管默认关闭');
-    assert(escrowUi.after === true, '点击“托管”应能切换托管开关');
-    assert(escrowUi.aiDisabled === false, '电脑席位的托管开关不应被禁用');
-    assert(escrowUi.aiCanEscrow === true, '电脑席位也应能勾选托管');
-    assert(escrowUi.aiStillOff === true, '再次点击应能取消托管');
-    await screenshot('00c-setup-escrow.png');
+    // 0.7 开局设置里没有托管开关：托管只能在对局内的面板按钮切换
+    const setupNoEscrow = await evaluate(`(() => ({
+      checkboxes: document.querySelectorAll('#setupFields input[type="checkbox"]').length,
+      escrowTags: Array.from(document.querySelectorAll('#setupFields .setup-seat-tag')).filter(
+        (tag) => tag.textContent.trim() === '托管'
+      ).length,
+      escrowIds: document.querySelectorAll('#setupFields [id^="escrow"]').length
+    }))()`);
+    assert(setupNoEscrow.checkboxes === 4, '开局设置只应保留 4 个「电脑」开关');
+    assert(setupNoEscrow.escrowTags === 0, '开局设置不应再有「托管」标签');
+    assert(setupNoEscrow.escrowIds === 0, '开局设置不应再有托管复选框');
 
     // 0.8 托管要真的传进引擎，并写进本地存储
     const escrowGame = await evaluate(`(() => {
@@ -328,8 +316,10 @@ async function main() {
       const pressed = button.getAttribute('aria-pressed');
       const on = button.classList.contains('is-on');
       const logged = g.logs.some((entry) => /开启硬币托管/.test(entry.text));
+      const listed = window.SBWarUI.getEscrowPlayers();
+      const stored = window.localStorage.getItem('sbwar.escrow');
       button.click();
-      return { exists, before, after, pressed, on, logged, back: g.isEscrowed(0) };
+      return { exists, before, after, pressed, on, logged, listed, stored, back: g.isEscrowed(0) };
     })()`);
     assert(escrowToggle.exists, '面板头部应有托管开关');
     assert(escrowToggle.before === false, '开局默认不托管');
@@ -337,18 +327,16 @@ async function main() {
     assert(escrowToggle.pressed === 'true', '开关状态应同步到 aria-pressed');
     assert(escrowToggle.on === true, '开启后按钮应高亮');
     assert(escrowToggle.logged === true, '开关动作应记入战斗记录');
+    assert(escrowToggle.listed.join() === '0', '托管状态应记入托管玩家列表');
+    assert(escrowToggle.stored === '[0]', `托管状态应写入本地存储，实际 ${escrowToggle.stored}`);
     assert(escrowToggle.back === false, '再点一下应能关闭托管');
     // 留一张开启状态的截图
     await evaluate("document.querySelector('#panel0 [data-escrow]').click(); true");
     await screenshot('00e-escrow-toggle.png');
 
-    // 托管是可选功能：验收完把开关和存档都还原，避免影响后面的场景
+    // 托管是可选功能：验收完把状态和存档都还原，避免影响后面的场景
     await evaluate(`(() => {
       window.localStorage.removeItem('sbwar.escrow');
-      [0, 1, 2, 3].forEach((index) => {
-        const box = document.getElementById('escrow' + index);
-        if (box && box.checked) box.click();
-      });
       return true;
     })()`);
 

@@ -2180,7 +2180,7 @@ input:focus-visible {
   box-shadow: 0 0 0 3px rgba(232, 180, 90, 0.08);
 }
 
-/* 席位行：名字 + 电脑开关 + 托管开关（每个 label 只绑定一个控件） */
+/* 席位行：名字 + 电脑开关（每个 label 只绑定一个控件） */
 .setup-row {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -2192,14 +2192,6 @@ input:focus-visible {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.025);
-}
-
-/* 电脑 / 托管 两个开关并排放在同一格里 */
-.setup-seats {
-  grid-area: seat;
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .setup-row.hidden {
@@ -2215,6 +2207,7 @@ input:focus-visible {
 }
 
 .setup-seat {
+  grid-area: seat;
   display: flex;
   align-items: center;
   padding: 5px 3px;
