@@ -163,8 +163,7 @@ test('双人局的生命值上限仍然是 3，不受退场规则影响', async 
   assert.equal(body(game, 0).maxHp, 3);
 });
 
-test('战报统计：退场顺序、最终排名、存活回合', async () => {
-  const game = makeGame({ names: ['甲', '乙', '丙'] });
+test('战报统计：退场顺序、最终排名、存活回合', async () => {  const game = makeGame({ names: ['甲', '乙', '丙'] });
   await game.eliminate(body(game, 1)); // 乙先退场
   await game.pass(0);
   await game.eliminate(body(game, 2)); // 丙后退场 → 甲获胜
@@ -196,4 +195,86 @@ test('战报统计：平局时不排名', async () => {
   assert.equal(game.over, true);
   assert.equal(game.winner, null);
   assert.ok(game.finalRanking().every((row) => row.rank === null), '平局不排名');
+});
+
+test('回归：磨刀的加成覆盖整组目标，不会被组内第一个目标吃掉', async () => {
+  const game = makeGame({ values: [0.9, 0.1, 0.1] });
+  const [a, b, c] = game.players;
+
+  a.body.sharpen = 1;
+  for (const p of [b, c]) {
+    p.body.shield = 1;
+    p.body.split = { total: 3, remaining: 3 };
+    p.body.maxHp = 1;
+    p.body.hp = 1;
+  }
+
+  await game.act(0, a.body.id, 0);
+
+  // 2 点伤害：护盾挡 1 点，两个目标各掉 1 点血，拆分各失去一个阶段
+  assert.equal(b.body.shield, 0, '乙的护盾被消耗');
+  assert.equal(c.body.shield, 0, '丙的护盾也被消耗');
+  assert.equal(b.body.split.remaining, 2, '乙掉血后失去一个拆分阶段');
+  assert.equal(c.body.split.remaining, 2, '丙同样掉血并失去一个拆分阶段');
+  assert.equal(a.body.sharpen, 0, '磨刀被这次攻击消耗掉');
+  assert.match(texts(game), /消耗 1 层【磨刀】，伤害提升至 2/);
+});
+
+test('回归：磨刀只消耗一次，不会因为打中多人而叠加消耗', async () => {
+  const game = makeGame({ values: [0.9] });
+  const [a, b, c] = game.players;
+  a.body.sharpen = 2;
+
+  await game.act(0, a.body.id, 0);
+
+  assert.equal(a.body.sharpen, 0, '两层磨刀被一次攻击整体消耗');
+  assert.equal(b.body.hp, 1, '乙吃到 3 点伤害（1 + 2 层磨刀），从 4 点掉到 1 点');
+  assert.equal(c.body.hp, 1, '丙同样吃到 3 点伤害');
+});
+
+test('回归：真实伤害（异质）不增幅也不消耗磨刀', async () => {
+  const game = makeGame({ values: [0.9] });
+  const [a, b] = game.players;
+  a.body.sharpen = 1;
+  a.body.hetero = true; // 异质打无异质 → 真实伤害
+  b.body.hp = 3;
+
+  await game.act(0, a.body.id, 0);
+
+  assert.equal(b.body.hp, 2, '真实伤害不增幅，只掉 1 点');
+  assert.equal(a.body.sharpen, 1, '真实伤害不消耗磨刀层数');
+});
+
+test('回归：普攻失败的自伤仍然享受磨刀增幅', async () => {
+  const game = makeGame({ values: [0.1] });
+  const actor = body(game, 0);
+  actor.sharpen = 1;
+
+  await game.act(0, 'p0', 0); // 判定失败 → 自伤
+
+  assert.equal(actor.hp, 2, '自伤被磨刀放大成 2 点（4 - 2）');
+  assert.equal(actor.sharpen, 0, '自伤消耗掉磨刀');
+});
+
+test('回归：磨刀覆盖整组时，即使第一个目标直接退场，后面的目标仍吃满加成', async () => {
+  const game = makeGame({ values: [0.9, 0.1, 0.1] });
+  const [a, b, c] = game.players;
+
+  a.body.sharpen = 1;
+  // 乙的拆分只剩最后一个阶段：复活失败会直接退场
+  b.body.shield = 1;
+  b.body.split = { total: 3, remaining: 1 };
+  b.body.maxHp = 1;
+  b.body.hp = 1;
+  // 丙的拆分还有多个阶段
+  c.body.shield = 1;
+  c.body.split = { total: 3, remaining: 3 };
+  c.body.maxHp = 1;
+  c.body.hp = 1;
+
+  await game.act(0, a.body.id, 0);
+
+  assert.equal(b.body.alive, false, '乙复活失败退场');
+  assert.equal(c.body.shield, 0, '丙的护盾照样被消耗');
+  assert.equal(c.body.split.remaining, 2, '丙照样吃到 2 点伤害，掉了一个拆分阶段');
 });

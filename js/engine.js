@@ -43,7 +43,7 @@
       id: 1, key: 'sharpen', name: '磨刀', icon: '△', accent: '#f5c26b',
       slot: true, target: 'self',
       short: '下次造成伤害 +1，可叠加。',
-      desc: '下次造成伤害时，伤害提高 1 点。可叠加：多层磨刀会在下一次伤害中一并消耗。'
+      desc: '下次造成伤害时，伤害提高 1 点。可叠加：多层磨刀会在下一次伤害中一并消耗。群体攻击时整组目标共享同一份加成，攻击结束后才消耗。'
     },
     {
       id: 2, key: 'shield', name: '护盾', icon: '□', accent: '#7cc7ff',
@@ -609,6 +609,12 @@
       const targets = option.entities.filter((entity) => entity.alive);
       this.log(`${actor.name} 的【普通攻击】攻击${option.label}：${targets.map((entity) => entity.name).join('、')}`, 'attack');
 
+      // 磨刀是“**这一次攻击**”的加成：整组目标共享同一份加成，攻击结束后统一消耗。
+      // 早先是由每个目标各自去消费磨刀，导致组内第一个目标把磨刀吃掉，
+      // 后面的目标只吃 1 点基础伤害——护盾一挡就等于没打中（已修）。
+      const bonus = actor.sharpen > 0 ? actor.sharpen : 0;
+      let sharpenUsed = false;
+
       for (let i = 0; i < targets.length; i += 1) {
         const target = targets[i];
         if (this.over || !target.alive) continue;
@@ -616,8 +622,21 @@
         const owner = this.players[target.owner];
         if (!owner || !owner.body || !owner.body.alive) continue;
         if (i > 0) await this.beat(260);
-        await this.damage(actor, target, 1, {});
+
+        // 真实伤害（异质对无异质）不增幅磨刀，也不该消耗磨刀层数
+        const real = actor.hetero !== target.hetero;
+        let amount = 1;
+        if (!real && bonus > 0) {
+          amount = 1 + bonus;
+          if (!sharpenUsed) {
+            sharpenUsed = true;
+            this.log(`${actor.name} 消耗 ${bonus} 层【磨刀】，伤害提升至 ${amount}`, 'damage');
+          }
+        }
+        await this.damage(actor, target, amount, { noSharpen: true });
       }
+
+      if (sharpenUsed) actor.sharpen = 0;
     }
 
     async pickTargetGroup(actor, options, purpose) {

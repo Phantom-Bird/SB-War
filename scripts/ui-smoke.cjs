@@ -646,6 +646,46 @@ async function main() {
     assert(groupState.current === 2, '回合应交给丙');
     await screenshot('14b-group-damage.png');
 
+    // 14.6 多人模式：磨刀的加成要覆盖整组目标，不能被组内第一个目标吃掉
+    await evaluate(`
+      (() => {
+        window.SBWarUI.start(['甲', '乙', '丙'], { firstPlayer: 0 });
+        const g = window.SBWarUI.getGame();
+        const seq = [0.9, 0.1, 0.1];
+        g.rng = () => (seq.length ? seq.shift() : 0.9);
+        g.players[0].body.sharpen = 1;
+        for (const idx of [1, 2]) {
+          const body = g.players[idx].body;
+          body.shield = 1;
+          body.split = { total: 3, remaining: 3 };
+          body.maxHp = 1;
+          body.hp = 1;
+        }
+        window.SBWarUI.render();
+        document.querySelector('[data-skill="0"]').click();
+        return true;
+      })()
+    `);
+    await waitUntil('window.SBWarUI.getGame().turn === 2 && !window.SBWarUI.getGame().busy', 9000);
+    const sharpenState = await evaluate(`(() => {
+      const g = window.SBWarUI.getGame();
+      return {
+        bRemaining: g.players[1].body.split ? g.players[1].body.split.remaining : null,
+        cRemaining: g.players[2].body.split ? g.players[2].body.split.remaining : null,
+        bShield: g.players[1].body.shield,
+        cShield: g.players[2].body.shield
+      };
+    })()`);
+    assert(
+      sharpenState.bRemaining === 2 && sharpenState.cRemaining === 2,
+      `磨刀应覆盖整组，两个目标都要掉血：${JSON.stringify(sharpenState)}`
+    );
+    assert(
+      sharpenState.bShield === 0 && sharpenState.cShield === 0,
+      `两个目标的护盾都应被消耗：${JSON.stringify(sharpenState)}`
+    );
+    await screenshot('14c-sharpen-group.png');
+
     // 15. 多人模式：多枚硬币由多位玩家分别确认
     await evaluate(`
       (() => {
