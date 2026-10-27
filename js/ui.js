@@ -1103,7 +1103,7 @@
   /**
    * 和局原因的一句话说明（战报、结算卡都用它）。
    * - all-dead：全员阵亡
-   * - turn-limit：超过人数 × 25 回合上限
+   * - turn-limit：超过人数 × 125 回合上限
    * - pass-streak：场上所有玩家都选择了跳过回合
    */
   function drawReasonText(instance) {

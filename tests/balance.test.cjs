@@ -309,11 +309,11 @@ test('和局：有人出手就会清空连续跳过计数', async () => {
   assert.equal(game.over, false, '有人动过手，就不算全员跳过');
 });
 
-test('和局：超过人数 × 25 回合上限后判和局', async () => {
+test('和局：超过人数 × 125 回合上限后判和局', async () => {
   const game = makeGame({ firstPlayer: 0, values: [0.9] });
-  assert.equal(game.drawTurnLimit(), 75, '3 人局 → 75 回合');
-  assert.equal(makeGame({ names: ['甲', '乙'] }).drawTurnLimit(), 50, '2 人局 → 50 回合');
-  assert.equal(makeGame({ names: ['甲', '乙', '丙', '丁'] }).drawTurnLimit(), 100, '4 人局 → 100 回合');
+  assert.equal(game.drawTurnLimit(), 375, '3 人局 → 375 回合');
+  assert.equal(makeGame({ names: ['甲', '乙'] }).drawTurnLimit(), 250, '2 人局 → 250 回合');
+  assert.equal(makeGame({ names: ['甲', '乙', '丙', '丁'] }).drawTurnLimit(), 500, '4 人局 → 500 回合');
 
   game.turn = game.drawTurnLimit();
   await game.pass(0);
@@ -321,7 +321,7 @@ test('和局：超过人数 × 25 回合上限后判和局', async () => {
   assert.equal(game.over, true);
   assert.equal(game.winner, null);
   assert.equal(game.drawReason, 'turn-limit');
-  assert.match(texts(game), /超过 75 回合上限，本局和局/);
+  assert.match(texts(game), /超过 375 回合上限，本局和局/);
 });
 
 test('和局：已退场的玩家排在仍在场的玩家之后', async () => {
