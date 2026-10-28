@@ -17,6 +17,9 @@ const PLAYERS = Number(process.argv[3] || 2);
 const EASY = AI.DIFFICULTY.EASY;
 const HARD = AI.DIFFICULTY.HARD;
 
+// 对照开关：SBWAR_BASELINE=1 → 把「第 2 轮平衡」的改动关掉，同种子对比旧版本
+require('./arena-baseline.cjs')();
+
 function makeRng(seed) {
   let cursor = seed >>> 0;
   return () => {

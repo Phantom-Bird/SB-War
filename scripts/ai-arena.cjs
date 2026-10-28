@@ -84,6 +84,9 @@ async function run(levels) {
 const EASY = AI.DIFFICULTY.EASY;
 const HARD = AI.DIFFICULTY.HARD;
 
+// 对照开关：SBWAR_BASELINE=1 → 把「第 2 轮平衡」的改动关掉，同种子对比旧版本
+require('./arena-baseline.cjs')();
+
 (async () => {
   console.log(`每组 ${ROUNDS} 局，${PLAYERS} 人局`);
 

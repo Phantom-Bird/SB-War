@@ -220,6 +220,72 @@
     return action(0) || null;
   }
 
+  /** 判定失败时技能会白送给对方——三种后果 */
+  const GIFT = {
+    /** 送不出去，或者送过去对方也不会因此变强 */
+    SAFE: 'safe',
+    /** 只会送到对方的**替身**身上：代价有限，但也不是完全免费 */
+    STANDIN: 'standin',
+    /** 真的会帮对方变强 */
+    BAD: 'bad'
+  };
+
+  /**
+   * 某个技能「判定失败被送给对方」时，对方到底会不会因此变强。
+   *
+   * 依据是引擎 `applyEffect()` 的真实行为：
+   *   · 磨刀会**叠层**（sharpen += 1）→ 送出去对方永远变强
+   *   · 拆分是开关，给上去对方就多阶段；拆到已拆分身上等于解除并回血 → 都会让对方变强
+   *   · 护盾 / 反甲 / 幸运 / 诅咒 / 小偷 是赋值，对方已经有了就不会更强
+   *   · 韧性是开关：对方已经有韧性时再送一次等于帮他取消韧性并立刻结算记录伤害 → 对方更差
+   *   · 异质是开关：对方已经有异质时再送一次等于帮他解除 → 对方更差
+   * 另外两种「送不出去」也算安全：对方技能槽满了；我替身出手而对方没有替身（落空）。
+   */
+  function giftRisk(board, actor, skillId) {
+    // 承接方：本体失败 → 对方本体；替身失败 → 对方替身（和引擎 backlashReceivers 一致）
+    const receivers = (
+      actor.isStandin
+        ? board.aliveOpponents.map((opponent) => opponent.standin)
+        : board.aliveOpponents.map((opponent) => opponent.body)
+    ).filter((entity) => entity && entity.alive);
+    if (!receivers.length) return GIFT.SAFE; // 没有承接实体 → 落空
+    // 承接方技能槽满了（且没有这个技能）→ 送不出去
+    if (
+      receivers.every(
+        (entity) => entity.slots.length >= entity.slotCap && !entity.slots.includes(skillId)
+      )
+    ) {
+      return GIFT.SAFE;
+    }
+
+    // 逐个承接方判断：收到这个效果之后对方是不是真的变强
+    const helps = (entity) => {
+      switch (skillId) {
+        case 1: return true; // 磨刀：叠层，对方下次伤害 +1
+        case 2: return entity.shield <= 0; // 护盾：赋值
+        case 3: return true; // 拆分：开关，给上去多阶段 / 解除回血
+        case 4: return !entity.tenacity; // 韧性：开关，对方没有才会变强
+        case 5: return entity.thorns <= 0; // 反甲：赋值
+        case 6: return entity.lucky <= 0; // 幸运币：赋值
+        case 7: return entity.curse <= 0; // 诅咒币：赋值
+        case 8: return !entity.thief; // 小偷：赋值
+        case 10: return !entity.hetero; // 异质：开关，对方没有才会变强
+        default: return false;
+      }
+    };
+    const dangerous = receivers.filter(helps);
+    if (!dangerous.length) return GIFT.SAFE;
+
+    // 承接方全是对方的替身：替身只有 1 点血、平时也不怎么出手，
+    // 挂上去的护盾 / 磨刀 / 反甲之类基本用不上 → 代价有限。
+    // 幸运币 / 诅咒币不行：硬币跟着实体走，对方照样能拿来重掷判定。
+    const allStandins = dangerous.every((entity) => entity.isStandin);
+    if (allStandins && actor.isStandin && skillId !== 6 && skillId !== 7) {
+      return GIFT.STANDIN;
+    }
+    return GIFT.BAD;
+  }
+
   // ------------------------------------------------------------ 难度 2
 
   /**
@@ -261,7 +327,14 @@
 
     // —— 磨刀
     sharpenBase: 26,
-    sharpenBlockedTarget: 44,
+    /**
+     * 目标整组被护盾挡着时的加成。
+     * 基线 26 + 44 = 70 分，还是打不过普攻的 100；26 + 80 = 106 分，
+     * 这一手才真的会在「破盾」时打出来（护盾会把整次普通攻击吃光，+1 点伤害能打穿）。
+     * 实测（scripts/ai-sweep-skills.cjs，同种子大样本）：磨刀使用率翻倍，
+     * 胜率在 2/3/4 人局都在噪声内。
+     */
+    sharpenBlockedTarget: 80,
     sharpenGiftFizzle: 22,
     sharpenLowHp: 18,
 
@@ -318,6 +391,27 @@
     summonEnemyNoStandin: 0,
 
     // —— 结构性参数
+    /**
+     * 只在**可用**的技能里挑最高分（1 = 开）。
+     * 关掉就是旧行为：所有技能一起打分，最高分那手不可用时直接回落成普攻。
+     * 留着这个开关是为了能在 scripts/ai-sweep-skills.cjs 里做同种子 A/B 对照。
+     */
+    onlyAvailableSkills: 1,
+    /**
+     * 「失败也不会白送对方」时，那批技能能拿到的分数。
+     * 0 = 关掉这个机制（保持旧行为：这八个技能因为失败要送人头而被压得很低，
+     * 实测选择率恒为 0）。打开后，AI 只在「送出去也没用」的局面才敢用它们。
+     *
+     * 取 98 而不是 100：普攻基准正好是 100，98 意味着「失败不花钱时这一手
+     * 至少值一次普攻，但仍然略逊于直接打一拳」——实测这样 2/3/4 人局胜率全部
+     * 持平或上涨（scripts/ai-sweep-skills.cjs，8000~12000 局同种子）。
+     */
+    safeGiftScore: 98,
+    /**
+     * 「失败只送到对方替身身上」时，那批技能能拿到的分数（比完全安全再低一档）。
+     * 0 = 关掉（默认）：替身也是对方的单位，送过去照样算送人头。
+     */
+    safeGiftStandinScore: 0,
     /** 防御类技能（护盾 / 韧性 / 拆分）按对手数量放大的倍数系数 */
     defenseThreatScale: 1,
     /** 替身组的价值倍率：多人局里也可以考虑拆掉替身、扒掉对方的效果 */
@@ -492,6 +586,34 @@
       if (score > 0) options.push({ id, score, why });
     };
 
+    /**
+     * 「失败也不会白送对方」时给这批技能一个能竞争的分。
+     * 这八个技能的基线压得很低，是因为判定失败时技能会被对方白用（护盾 / 幸运 / 诅咒 /
+     * 小偷 / 异质 / 韧性 / 拆分 / 磨刀），等于送人头。
+     * 但「送不出去」是有条件的：对方技能槽满了、对方已经有这个效果了、
+     * 或者压根没有承接实体——这时候失败不花钱，技能就值得用了。
+     *
+     * 失败只送到**对方替身**身上属于折中：替身 1 点血、平时也不怎么出手，
+     * 挂上去的效果多半用不上，所以给一个低于「完全安全」的分数。
+     */
+    const safeScore = (id, score, why) => {
+      if (!HARD_TUNE.safeGiftScore) return { score, why };
+      const risk = giftRisk(board, actor, id);
+      if (risk === GIFT.SAFE) {
+        return {
+          score: Math.max(score, HARD_TUNE.safeGiftScore),
+          why: '失败也送不到对方，可以放心用'
+        };
+      }
+      if (risk === GIFT.STANDIN && HARD_TUNE.safeGiftStandinScore) {
+        return {
+          score: Math.max(score, HARD_TUNE.safeGiftStandinScore),
+          why: '失败只送到对方替身身上，代价有限'
+        };
+      }
+      return { score, why };
+    };
+
     // —— 护盾：挡 1 点伤害，连自己普攻失败的自伤一起挡
     {
       let score = HARD_TUNE.shieldBase;
@@ -525,11 +647,13 @@
         why = '对方技能槽满了，磨刀失败也送不出去';
       }
       if (bodyHp <= 2) score -= HARD_TUNE.sharpenLowHp; // 自伤会被放大，很危险
-      push(1, score, why);
+      const safe = safeScore(1, score, why);
+      push(1, safe.score, safe.why);
     }
 
     // —— 韧性：把伤害记下来、回合末结算一半，等于多挨一下
-    {
+    // 韧性是开关：自己已经带着的时候再用，等于把它关掉并立刻结算记录伤害 → 纯亏，不考虑
+    if (!actor.tenacity) {
       let score = HARD_TUNE.tenacityBase;
       let why = '用韧性把伤害记下来，回合末只结算一半';
       if (bodyHp <= 2) {
@@ -542,7 +666,8 @@
       }
       if (giftFizzle) score += HARD_TUNE.tenacityGiftFizzle;
       if (weakestHp <= 1) score -= HARD_TUNE.tenacityEnemyAt1Hp;
-      push(4, score, why);
+      const safe = safeScore(4, score, why);
+      push(4, safe.score, safe.why);
     }
 
     // —— 反甲：挨打后反击 1 点；自己普攻失败的自伤也会触发，直接打到对方本体
@@ -559,7 +684,8 @@
       }
       if (giftFizzle) score += HARD_TUNE.thornsGiftFizzle;
       if (weakestHp <= 2) score += HARD_TUNE.thornsEnemyLowHp;
-      push(5, score, why);
+      const safe = safeScore(5, score, why);
+      push(5, safe.score, safe.why);
     }
 
     // —— 小偷：下次造成伤害后随机偷走对方一个效果
@@ -572,11 +698,13 @@
         why = '目标身上挂着效果，打完可以顺走一个';
       }
       if (giftFizzle) score += HARD_TUNE.thiefGiftFizzle;
-      push(8, score, why);
+      const safe = safeScore(8, score, why);
+      push(8, safe.score, safe.why);
     }
 
     // —— 异质：真实伤害，无视护盾 / 韧性 / 反甲
-    {
+    // 异质是开关：自己已经异质的时候再用，只会把它关掉（自己吃亏）→ 不考虑
+    if (!actor.hetero) {
       let score = HARD_TUNE.heteroBase;
       let why = '对方没有护盾，异质收益不大';
       if (board.enemyShielded) {
@@ -592,7 +720,8 @@
         why = '对方已经异质，我的伤害本来就是真实的';
       }
       if (giftFizzle) score += HARD_TUNE.heteroGiftFizzle;
-      push(10, score, why);
+      const safe = safeScore(10, score, why);
+      push(10, safe.score, safe.why);
     }
 
     // —— 幸运：给自己一枚幸运币，判定失败时 50% 概率救回来
@@ -601,7 +730,8 @@
       let why = '先囤一枚幸运币，关键判定能重掷';
       if (bodyHp <= 2) score += HARD_TUNE.luckyLowHp;
       if (giftFizzle) score += HARD_TUNE.luckyGiftFizzle;
-      push(6, score, why);
+      const safe = safeScore(6, score, why);
+      push(6, safe.score, safe.why);
     }
 
     // —— 诅咒：给对方一枚诅咒币，能压掉对方的成功判定（技能成功还能被抢过来）
@@ -615,11 +745,13 @@
         why = '对方快挂了，诅咒币能压掉它的复活判定';
       }
       if (giftFizzle) score += HARD_TUNE.curseGiftFizzle;
-      push(7, score, why);
+      const safe = safeScore(7, score, why);
+      push(7, safe.score, safe.why);
     }
 
     // —— 拆分：把生命拆成多个 1 血阶段，逐阶段做复活判定
-    {
+    // 拆分是开关：已经拆分了再按一次会解除拆分并回血 → 纯亏，不考虑
+    if (!actor.split) {
       let score = HARD_TUNE.splitBase;
       let why = '拆分成多个阶段，逐阶段判定复活';
       if (bodyHp >= 3) {
@@ -628,7 +760,8 @@
       }
       if (board.enemySharpen) score -= HARD_TUNE.splitEnemySharpen; // 2 点伤害会让阶段直接崩掉
       if (giftFizzle) score += HARD_TUNE.splitGiftFizzle;
-      push(3, score, why);
+      const safe = safeScore(3, score, why);
+      push(3, safe.score, safe.why);
     }
 
     // —— 召唤：多一个 1 血替身。
@@ -686,12 +819,20 @@
     // —— 技能：只有明显比“直接打一拳”更值时才出手
     scoreSkills(actor, board, plan, options);
 
-    if (!options.length) return action(0, '没有更好的选择，直接普攻');
+    // 只在**真的能用**的技能里挑最高分。
+    // 之前是把所有技能一起打分再挑最高，落选的技能不可用时只能回落成普攻——
+    // 而召唤的权重最高、替身出手时又不可用，于是替身每次都只能普攻，
+    // 其他技能（磨刀 / 拆分 / 韧性 / 反甲 / 幸运 / 诅咒 / 小偷 / 异质）根本没机会被比较。
+    // onlyAvailableSkills = 0 可以切回旧行为，方便做 A/B 对照。
+    const usable = HARD_TUNE.onlyAvailableSkills
+      ? options.filter((item) => byId(item.id))
+      : options;
+    if (!usable.length) return action(0, '没有更好的选择，直接普攻');
 
     // 极小的随机扰动：避免每次都选同一手，又不影响整体判断
-    let best = options[0];
+    let best = usable[0];
     let bestScore = -Infinity;
-    for (const item of options) {
+    for (const item of usable) {
       const score = item.score + (rng ? (rng() - 0.5) * 6 : 0);
       if (score > bestScore) {
         bestScore = score;

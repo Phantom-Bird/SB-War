@@ -28,6 +28,12 @@ function makeGame(options = {}) {
 
 const body = (game, index) => game.players[index].body;
 
+/**
+ * 「判定失败会把效果白送给对方」的那批技能。
+ * 第 2 轮平衡之前，它们在实战里的选择率恒为 0%；现在要保证它们真能打出来。
+ */
+const RISKY_SKILLS = [1, 3, 4, 5, 6, 7, 8, 10]; // 磨刀 / 拆分 / 韧性 / 反甲 / 幸运 / 诅咒 / 小偷 / 异质
+
 // ------------------------------------------------------------ 核心原则
 
 test('难度 2：开局不会把回合浪费在磨刀 / 护盾这类技能上', () => {
@@ -144,6 +150,72 @@ test('难度 2：目标身上没有效果时不会开小偷', () => {
 
   const action = AI.chooseAction(game, 0, () => 0.99, HARD);
   assert.notEqual(action.skillId, 8, '不该浪费小偷');
+});
+
+test('难度 2：自己已经异质 / 拆分 / 韧性 时不会再按一次（那是开关，会把自己的效果关掉）', () => {
+  for (const [id, apply] of [
+    [10, (standin) => { standin.hetero = true; }],
+    [3, (standin) => { standin.split = { total: 3, remaining: 3 }; }],
+    [4, (standin) => { standin.tenacity = true; standin.tenacityRecord = 0; }]
+  ]) {
+    const game = makeGame();
+    const own = body(game, 0);
+    own.hp = 3;
+    game.summonStandin(own);
+    const standin = game.players[0].standin;
+    apply(standin);
+    body(game, 1).shield = 1; // 对方带盾 → 这几个技能本来很香
+
+    const action = AI.chooseAction(game, 0, () => 0.99, HARD);
+    assert.notEqual(action.skillId, id, `技能 ${id} 是开关，自己已经带着就不该再按（会把效果关掉）`);
+  }
+});
+
+// ------------------------------------------------- 第 2 轮平衡：失败白送的安全性
+
+/**
+ * 搭一个「普攻只有 97.6 分、但失败也送不到对方」的局面：
+ *   · 我方替身出手（本体 3 血 → 替身顶前面）
+ *   · 对方本体：带盾 + 已异质（我的伤害被盾挡下，异质还带 -30）
+ *   · 对方替身：1 血 → 打替身组最划算，但只值 97.6 分（普攻基准是 100）
+ * 两种局面只差「对方替身的技能槽满不满」：
+ *   满 → 失败送不出去 → 安全分生效，那批技能直接上桌
+ *   不满 → 失败会白送给对方替身 → 不给安全分，还是普攻最划算
+ */
+function makeGiftScenario(enemySlotsFull) {
+  const game = makeGame();
+  const actor = body(game, 0);
+  actor.hp = 3;
+  game.summonStandin(actor); // 我方替身出手
+  game.players[0].standin.hetero = true; // 我方也是异质 → 对方的护盾照样挡得住
+
+  const enemyBody = body(game, 1);
+  enemyBody.hp = 3;
+  enemyBody.shield = 1;
+  enemyBody.hetero = true;
+  game.summonStandin(enemyBody);
+
+  const enemyStandin = game.players[1].standin;
+  if (enemySlotsFull) {
+    game.occupy(enemyStandin, 9); // 技能槽塞满 → 失败也送不出去
+    game.occupy(enemyStandin, 2);
+  }
+  return game;
+}
+
+test('难度 2：技能失败也送不到对方时，敢用那批平时不用的技能', () => {
+  const game = makeGiftScenario(true);
+  const action = AI.chooseAction(game, 0, () => 0.5, HARD);
+  assert.ok(
+    RISKY_SKILLS.includes(action.skillId),
+    `失败送不出去就该敢用冒险技能，实际用了技能 ${action.skillId}`
+  );
+});
+
+test('难度 2：技能失败会白送给对方时，还是普攻最划算', () => {
+  const game = makeGiftScenario(false);
+  const action = AI.chooseAction(game, 0, () => 0.5, HARD);
+  assert.equal(action.skillId, 0, '失败就把效果送给对方，不该出手');
 });
 
 // ------------------------------------------------------------ 硬币
@@ -268,10 +340,9 @@ test('难度 2：有效生命把护盾和韧性算进去', () => {
 
 /**
  * 跑一批对局，统计难度 2 的出手分布。
- * 这条测试锁住难度 2 的核心特征：**回合要么用来输出，要么用来召唤替身当缓冲**，
- * 不会像早期版本那样把大半回合花在磨刀 / 韧性 / 小偷这类"失败就白送对方"的技能上。
+ * 这一条锁住难度 2 的核心特征：**回合主要用来输出或召唤替身当缓冲**，
+ * 但「失败就白送对方」的那批技能也必须真的会打出来（第 2 轮平衡的目标）。
  */
-const WASTE_SKILLS = [1, 4, 8, 6, 7, 3]; // 磨刀 / 韧性 / 小偷 / 幸运 / 诅咒 / 拆分
 
 async function collectUsage(games = 24) {
   const usage = new Array(11).fill(0);
@@ -315,18 +386,20 @@ test('难度 2：绝大多数回合在普攻或召唤替身', async () => {
   assert.ok(total > 100, `样本太少，只有 ${total} 次出手`);
   const outputRate = (usage[0] + usage[9]) / total;
   assert.ok(
-    outputRate >= 0.8,
+    outputRate >= 0.7,
     `普攻+召唤占比只有 ${(outputRate * 100).toFixed(1)}%（${usage[0]}+${usage[9]}/${total}），难度 2 应该以输出为主`
   );
 });
 
-test('难度 2：不会用磨刀 / 韧性 / 小偷这类"失败就白送对方"的技能', async () => {
-  const usage = await collectUsage();
+test('难度 2：磨刀 / 拆分 / 韧性 / 反甲 / 幸运 / 诅咒 / 小偷 / 异质 现在都打得出来', async () => {
+  const usage = await collectUsage(120);
   const total = usage.reduce((sum, n) => sum + n, 0);
-  const waste = WASTE_SKILLS.reduce((sum, id) => sum + usage[id], 0);
-  const wasteRate = waste / total;
+  for (const id of RISKY_SKILLS) {
+    assert.ok(usage[id] > 0, `技能 ${id} 一次都没被选中（第 2 轮平衡的目标就是让它们真能打出来）`);
+  }
+  const risky = RISKY_SKILLS.reduce((sum, id) => sum + usage[id], 0);
   assert.ok(
-    wasteRate <= 0.05,
-    `无把握技能占比 ${(wasteRate * 100).toFixed(1)}%（${waste}/${total}），这些技能失败会把效果白送给对方`
+    risky / total <= 0.35,
+    `冒险技能占比 ${((risky / total) * 100).toFixed(1)}%（${risky}/${total}），不能变成无脑刷技能`
   );
 });
