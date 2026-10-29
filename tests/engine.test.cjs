@@ -176,6 +176,52 @@ test('再次获得韧性：取消效果并立即结算全部记录伤害', async
   assert.equal(body(game, 0).hp, 1);
 });
 
+test('韧性记录的是生命值减少值：被护盾完全抵挡的伤害不计入', async () => {
+  const game = makeGame({ values: [0.9, 0.9] });
+  const target = body(game, 0);
+
+  await game.act(0, 'p0', 4);
+  target.shield = 1;
+  await game.act(1, 'p1', 0);
+
+  assert.equal(target.hp, 3, '护盾挡住了，生命值没减少');
+  assert.equal(target.tenacityRecord, 0, '生命值没减少 → 不记录');
+});
+
+test('真实伤害也会被韧性承接并记录，回合结束时按一半结算', async () => {
+  const game = makeGame({ values: [0.9, 0.9, 0.9] });
+  const target = body(game, 0);
+
+  await game.act(0, 'p0', 4); // 韧性
+  await game.act(1, 'p1', 10); // 异质
+  await game.pass(0); // 甲跳过
+  await game.act(1, 'p1', 0); // 乙普攻 → 对甲是真实伤害
+
+  assert.equal(target.tenacity, true);
+  assert.equal(target.hp, 3, '真伤被韧性承接，生命值不立刻减少');
+  assert.equal(target.tenacityRecord, 1, '真伤也要记录生命值减少值');
+
+  await game.pass(0);
+  assert.equal(target.hp, 2, '回合结束时结算一半（1 点的一半向上取整）');
+  assert.equal(target.tenacity, false);
+});
+
+test('韧性延迟结算的伤害按自伤处理：护盾照挡（真实伤害才会无视护盾）', async () => {
+  const game = makeGame({ values: [0.9, 0.9] });
+  const target = body(game, 0);
+
+  await game.act(0, 'p0', 4);
+  body(game, 1).sharpen = 2;
+  await game.act(1, 'p1', 0);
+  assert.equal(target.tenacityRecord, 3);
+
+  target.shield = 1; // 结算时护盾还在
+  await game.pass(0);
+
+  assert.equal(target.hp, 2, '结算 2 点被护盾挡掉 1 点 → 实际只扣 1 点');
+  assert.equal(target.shield, 0);
+});
+
 test('复活判定成功：回满生命、清除效果、释放技能槽', async () => {
   const game = makeGame({ firstPlayer: 1, values: [0.9, 0.9] });
   const target = body(game, 0);

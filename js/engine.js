@@ -73,8 +73,8 @@
     {
       id: 4, key: 'tenacity', name: '韧性', icon: '—', accent: '#8fd6b4',
       slot: true, target: 'self',
-      short: '记录伤害，回合结束时结算一半。',
-      desc: '记录自身受到的所有伤害并推迟结算。自身回合结束时，解除韧性并结算记录伤害的一半（四舍五入）。再次使用会取消韧性并立即结算全部记录伤害。'
+      short: '记录生命值减少值，回合结束时结算一半。',
+      desc: '记录自身生命值的减少量并推迟结算：无论受到的是普通伤害还是真实伤害，减少值都会被记录（护盾完全抵挡的部分不计入）。自身回合结束时，解除韧性并结算记录伤害的一半（四舍五入）。延迟结算的伤害一律按自伤处理。再次使用会取消韧性并立即结算全部记录伤害。'
     },
     {
       id: 5, key: 'thorns', name: '反甲', icon: '◇', accent: '#ff8b9a',
@@ -177,7 +177,7 @@
         value: String(record),
         label: `韧性 · ${record}`,
         tone: 'green',
-        title: `记录伤害 ${record} 点，回合结束结算一半`
+        title: `记录生命值减少 ${record} 点，回合结束结算一半`
       });
     }
     if (entity.thorns > 0) {
@@ -753,6 +753,7 @@
         entity.tenacityRecord = 0;
         this.log(`${entity.name} 取消韧性，立即结算 ${record} 点记录伤害`, 'effect');
         if (record > 0) {
+          // 同样按自伤结算（source = null → 不是真实伤害）
           await this.damage(null, entity, record, { ignoreTenacity: true, fromTenacity: true });
         }
         return;
@@ -760,7 +761,7 @@
 
       entity.tenacity = true;
       entity.tenacityRecord = 0;
-      this.log(`${entity.name} 获得韧性：记录受到的伤害`, 'effect');
+      this.log(`${entity.name} 获得韧性：记录生命值的减少量`, 'effect');
     }
 
     summonStandin(entity) {
@@ -1104,7 +1105,7 @@
 
       // 磨刀：只增幅普通伤害；真实伤害不触发伤害效果，也不消耗磨刀
       if (real) {
-        this.log(`真实伤害：${target.name} 无法触发技能效果`, 'damage');
+        this.log(`真实伤害：${target.name} 的护盾 / 反甲 / 小偷不触发`, 'damage');
         if (source && source.sharpen > 0) {
           this.log(`${source.name} 的磨刀层数保留（${source.sharpen} 层）`, 'effect');
         }
@@ -1125,10 +1126,13 @@
         this.log(`${target.name} 的【护盾】抵挡 1 点伤害`, 'effect');
       }
 
-      if (!real && target.tenacity && dmg > 0 && !opts.ignoreTenacity) {
+      // 韧性：记录「生命值减少值」并延迟结算。
+      // 真实伤害也会被韧性承接并记录（真伤无视护盾，所以减少值就是全额）；
+      // 但真伤仍然不触发护盾 / 反甲 / 小偷这些其他效果。
+      if (target.tenacity && dmg > 0 && !opts.ignoreTenacity) {
         target.tenacityRecord += dmg;
         changed = true;
-        this.log(`${target.name} 的【韧性】记录 ${dmg} 点伤害（累计 ${target.tenacityRecord}）`, 'effect');
+        this.log(`${target.name} 的【韧性】记录 ${dmg} 点生命值减少（累计 ${target.tenacityRecord}）`, 'effect');
       } else if (dmg > 0) {
         target.hp -= dmg;
         changed = true;
@@ -1608,6 +1612,8 @@
       entity.tenacity = false;
       entity.tenacityRecord = 0;
       this.log(`${entity.name} 的【韧性】在回合结束结算：${record} 的记录伤害减半为 ${half} 点`, 'effect');
+      // 延迟结算的伤害一律按**自伤**处理（source 传 null）：
+      // 不是真实伤害 → 护盾照挡、反甲照反击到对手本体、伤害不记到任何玩家账上。
       await this.damage(null, entity, half, { ignoreTenacity: true, fromTenacity: true });
     }
 

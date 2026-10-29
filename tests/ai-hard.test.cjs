@@ -120,17 +120,26 @@ test('难度 2：没有替身时会先召唤一个替身当缓冲', () => {
   assert.equal(action.skillId, 9, '替身能替本体扛自伤，也能挡掉对手的群体攻击');
 });
 
-test('难度 2：对手护盾 / 韧性成堆时会用异质破防', () => {
-  const game = makeGame({ names: ['甲', '乙', '丙', '丁'] });
+test('难度 2：对手带盾时会用异质破防', () => {
+  const game = makeGame();
   const actor = body(game, 0);
-  actor.sharpen = 1;
+  actor.hp = 3; // 本体血量低 → 由替身出手
+  game.summonStandin(actor); // 已有替身 → 召唤不可用
   body(game, 1).shield = 1;
-  body(game, 2).tenacity = true;
-  body(game, 3).shield = 1;
-  body(game, 1).tenacity = true;
 
   const action = AI.chooseAction(game, 0, () => 0.99, HARD);
   assert.equal(action.skillId, 10, '应该用异质破防');
+});
+
+test('难度 2：对方带韧性时不会用异质去破（真伤同样被韧性记录减半）', () => {
+  const game = makeGame();
+  const actor = body(game, 0);
+  actor.hp = 3;
+  game.summonStandin(actor);
+  body(game, 1).tenacity = true;
+
+  const action = AI.chooseAction(game, 0, () => 0.99, HARD);
+  assert.notEqual(action.skillId, 10, '异质破不了韧，不该为了破韧开异质');
 });
 
 test('难度 2：不会为了磨刀浪费回合（磨刀会放大自伤）', () => {

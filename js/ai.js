@@ -19,6 +19,9 @@
  *   6. 替身**不再复活**：被打空直接消失；本体退场或本体复活时替身一并消散。
  *      所以替身是一次性挡箭牌，召唤它非常划算。
  *   7. 本体生命值上限＝在场人数 + 1，有人退场时剩余玩家的上限会下调。
+ *   8. 韧性记录的是**生命值减少值**，**真实伤害也会被它承接并记录**，
+ *      回合结束时按一半结算，而且那次结算按**自伤**处理。
+ *      所以异质破不了韧（真伤和普通伤害在韧性面前待遇一样）。
  */
 (function (root, factory) {
   const api = factory();
@@ -100,9 +103,12 @@
     return total;
   }
 
-  /** 对手是否能靠护盾 / 异质挡住真实伤害之外的东西（决定反甲是否划算） */
+  /**
+   * 对手身上有没有「真实伤害也啃不动」的东西（决定反甲 / 异质是否划算）。
+   * 只有护盾算：韧性会承接并记录真伤（回合结束按一半结算），不是挡得住。
+   */
   function hasPierceable(enemies) {
-    return (enemies || []).some((enemy) => !enemy.hetero && (enemy.shield > 0 || enemy.tenacity));
+    return (enemies || []).some((enemy) => !enemy.hetero && enemy.shield > 0);
   }
 
   /** 攻击某个目标组的收益（进阶 AI 用来比较“本体组”与“替身组”） */
@@ -360,7 +366,12 @@
     // —— 异质
     heteroBase: 24,
     heteroEnemyShielded: 90,
-    heteroEnemyTenacity: 40,
+    /**
+     * 对方带韧性时的加减分：**负数**。
+     * 真伤现在也会被韧性承接（记录生命值减少值），回合结束时按一半结算——
+     * 所以异质不再能破韧，反而不如直接打一拳（普通伤害同样被韧性记录减半）。
+     */
+    heteroEnemyTenacity: -30,
     heteroEnemyHasHetero: 30,
     heteroGiftFizzle: 16,
 
@@ -713,7 +724,7 @@
       }
       if (board.enemyTenacity) {
         score += HARD_TUNE.heteroEnemyTenacity;
-        why = '对方带韧性，异质让伤害直接生效';
+        why = '对方带韧性：真伤也会被记录并减半结算，异质不占便宜';
       }
       if (board.enemyHetero) {
         score -= HARD_TUNE.heteroEnemyHasHetero;
